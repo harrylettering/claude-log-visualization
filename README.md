@@ -139,7 +139,7 @@ claude-log-visualization/
 ```
 
 ## 页面截图
-<img width="1672" height="682" alt="image" src="https://github.com/user-attachments/assets/6315d561-b42c-45da-9265-87c03415ffd1" />
+<img width="1837" height="750" alt="image" src="https://github.com/user-attachments/assets/49a0a606-ca35-4583-9843-6a490f060cfe" />
 
 
 

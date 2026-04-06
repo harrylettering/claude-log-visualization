@@ -140,3 +140,6 @@ vite.config.ts.timestamp-*
 
 # Vite cache directory
 .vite/
+
+#claude
+.calude/

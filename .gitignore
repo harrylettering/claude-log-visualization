@@ -142,4 +142,4 @@ vite.config.ts.timestamp-*
 .vite/
 
 #claude
-.calude/
+.claude/

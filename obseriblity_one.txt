@@ -1,0 +1,81 @@
+Claude Code 本地智能体可观测性监控面板 - 需求与架构设计文文档
+1. 定位与背景
+随着 Anthropic 官方推出基于 CLI 的原生智能体 claude code，开发者开始大量在本地终端授权 AI 进行文件读取、代码修改和命令执行。然而，claude code 在后台的运行犹如一个“黑盒”：
+
+痛点 1（成本黑洞）： 开发者不知道某次复杂的 Debug 任务到底消耗了多少 Token，哪些无用的大文件被塞入了上下文导致成本飙升。
+
+痛点 2（死循环陷阱）： 当遇到编译错误时，智能体可能陷入“执行命令 -> 报错 -> 瞎改代码 -> 再次报错”的死循环。
+
+痛点 3（上下文丢失）： 纯文本的终端输出难以直观复盘 AI 的思考路径和文件修改 Diff。
+
+本项目（基于 claude-log-visualization 升级）旨在构建一个完全本地化、零侵入、极低延迟的可观测性面板，通过解析本地日志流的方式，为使用 claude code 的极客开发者提供一个“AI 程序员的监工大屏”。
+
+2. 核心架构：插件化日志解析系统 (Pluggable Parser System)
+由于我们放弃了高阻力的网络拦截（MITM/Proxy）方案，系统将采用被动式文件监听 + 结构化提取的架构。
+
+2.1 本地架构流转图
+运行 claude code: 开发者在终端正常使用 claude 命令。
+
+Tail Watcher (本地监听服务): 极轻量的 Node.js/Go 守护进程，使用增量读取（如 fs.watch / tail -f）监听项目下的日志记录文件。
+
+Claude Code Parser (专属解析器): 实时提取新增的文本流，将其映射为系统的标准行为 Schema。
+
+WebSocket Server: 将标准化的 JSON 动作流式推送到前端。
+
+React UI: 在浏览器或 VS Code Webview 中实时渲染时间轴、Diff 视图和成本归因。
+
+2.2 统一动作模型 (Standard Schema)
+不管 claude code 底层日志有多繁杂，解析器必须将其收敛为以下四类核心动作（TypeScript 定义）：
+
+TypeScript
+type AgentAction = 
+  | { type: 'CodeRead', filePath: string, tokens: number, preview?: string }
+  | { type: 'CodeWrite', filePath: string, diff: string /* 统一的 patch 格式 */ }
+  | { type: 'TerminalCommand', command: string, exitCode: number, output: string }
+  | { type: 'AgentThought', text: string };
+
+interface Span {
+  id: string;
+  timestamp: number;
+  durationMs: number;
+  tokenUsage: { input: number, output: number, cost: number };
+  action: AgentAction;
+}
+3. Claude Code 专属特性适配需求
+针对 claude code 的工具调用（Tool Use）特性，我们的 ClaudeCodeParser 需要做针对性提取：
+
+终端命令追踪 (Bash / Run 工具)：
+
+提取目标：精准捕获 claude code 执行的 npm test、grep 或 ls 命令，以及终端返回的 stderr 和 stdout。
+
+业务价值：这能清晰展示 AI 收集环境信息的手段，以及它是否因为读不懂某个报错而陷入迷茫。
+
+文件检视追踪 (View / Glob 工具)：
+
+提取目标：捕获 AI 读取了哪些文件路径。
+
+业务价值：计算并归因这些文件占用的 Token 量，并在 UI 侧边栏构建一个实时的“上下文树（Context Tree）”。
+
+代码修改追踪 (Edit / Replace 工具)：
+
+提取目标：将 claude code 寻找特定行并替换的代码块，还原为标准的 Git 风格 Diff。
+
+4. UI 呈现与交互需求 (Frontend Refactoring)
+现有的数据可视化组件需要向“代码编辑器增强视图”全面重构。
+
+4.1 沉浸式时间轴 (Timeline View V2)
+时间轴不再只是干瘪的 JSON 节点，而是富交互卡片：
+
+终端卡片 (Terminal Emulator Card)：当动作为 TerminalCommand 时，渲染一个黑底白字的微型终端窗口。如果是 exitCode !== 0（执行失败），将卡片边框标红，并高亮 stderr 内容。
+
+代码 Diff 卡片 (Diff Viewer Card)：集成 react-diff-viewer，直接展示由 CodeWrite 触发的文件红绿修改对比，而不是原始的替换指令。
+
+4.2 实时成本归因雷达 (Cost Attribution Dashboard)
+颗粒度细化：突破整体 Token 统计的限制。
+
+动态图表：展示一个“火焰图”或“饼图”，标明当前会话中，Token 是消耗在“读取庞大的库文件”上，还是消耗在“反复生成长代码”上。精确计算每次循环重试消耗的美元金额（$USD）。
+
+4.3 智能体死循环预警 (Loop Detection)
+通过聚合引擎（aggregateEngine.ts），在前端实现逻辑判断：如果检测到连续 3 次以上的模式为：修改同一文件 -> 运行同一测试命令 -> 收到类似的 Error 堆栈。
+
+UI 动作：在时间轴插入一个黄色的警告卡片（"🚨 智能体可能陷入死循环，建议人工介入并补充 Prompt"）。

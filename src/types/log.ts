@@ -1,4 +1,7 @@
+import type { ActionEnhancedEntry } from './agent';
+
 // ============ 内容块类型 ============
+
 
 export interface TextBlock {
   type: 'text';
@@ -109,7 +112,7 @@ export type EntryCategory =
 
 // ============ 日志条目 ============
 
-export interface LogEntry {
+export interface LogEntry extends ActionEnhancedEntry {
   // 核心标识
   uuid: string;
   parentUuid: string | null;
@@ -136,6 +139,10 @@ export interface LogEntry {
 
   // 分类（解析时添加）
   _category?: EntryCategory;
+
+  // 平行分叉相关 (Visual Fork)
+  isForked?: boolean;
+  forkBranchId?: string;
 
   // 兼容旧版本字段
   isMeta?: boolean;
@@ -171,7 +178,6 @@ export interface SessionStats {
   inputTokens: number;
   outputTokens: number;
   sessionDuration: number;
-  filesModified: number;
   modelsUsed: string[];
 }
 
@@ -189,11 +195,6 @@ export interface ParsedLogData {
     timestamp: string;
     durationMs: number;
     messageCount: number;
-  }>;
-  fileHistory: Array<{
-    timestamp: string;
-    messageId: string;
-    files: Record<string, unknown>;
   }>;
 }
 

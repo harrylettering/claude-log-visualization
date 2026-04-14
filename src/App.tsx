@@ -1,160 +1,328 @@
-import { useState, useCallback } from 'react'
-import { BarChart2, MessageSquare, Clock, Wrench, Zap, FileText, Upload, History, Download, Bug, AlertCircle, Loader2, Brain, GitMerge, TrendingUp, Settings, PlayCircle, Sparkles, Layers } from 'lucide-react'
+import { useState, useCallback, useEffect, useRef } from 'react'
+import { BarChart2, MessageSquare, Clock, Zap, AlertCircle, Loader2, GitMerge, Sparkles, Activity, Terminal, Search, HardDrive, PlayCircle, Upload, Share2 } from 'lucide-react'
 import { parseLog } from './utils/logParser'
-import type { ParsedLogData } from './types/log'
+import type { ParsedLogData, LogEntry } from './types/log'
 import { FileUpload } from './components/FileUpload'
 import { SessionOverview } from './components/SessionOverview'
 import { TokenDashboard } from './components/TokenDashboard'
 import { TimelineView } from './components/TimelineView'
 import { ConversationFlow } from './components/ConversationFlow'
-import { ToolAnalysis } from './components/ToolAnalysis'
-import { PerformanceView } from './components/PerformanceView'
-import { RealTimeLog } from './components/RealTimeLog'
-import { FileHistory } from './components/FileHistory'
-import { ExportPanel } from './components/ExportPanel'
-import { DebugPanel } from './components/DebugPanel'
-import { AIAnalysis } from './components/AIAnalysis'
 import { SessionCompare } from './components/SessionCompare'
-import { SessionAggregate } from './components/SessionAggregate'
-import { SessionReplay } from './components/SessionReplay'
-import { BudgetSettings } from './components/BudgetSettings'
 import { PromptOptimizer } from './components/PromptOptimizer'
-import { SessionPatternLibrary } from './components/SessionPatternLibrary'
-import { useBudgetContext } from './contexts/BudgetContext'
+import { AgentFlowView } from './components/AgentFlowView'
 
-type ViewId = 'overview' | 'tokens' | 'timeline' | 'conversation' | 'tools' | 'performance' | 'realtime' | 'history' | 'export' | 'debug' | 'ai-analysis' | 'compare' | 'aggregate' | 'replay' | 'prompt-optimizer' | 'pattern-library'
+type ViewId = 'overview' | 'tokens' | 'timeline' | 'conversation' | 'compare' | 'prompt-optimizer' | 'agent-flow'
 
 const navItems: { id: ViewId; label: string; icon: React.ReactNode }[] = [
+  { id: 'agent-flow', label: 'Agent Flow', icon: <Share2 className="w-4 h-4" /> },
   { id: 'overview', label: '会话概览', icon: <BarChart2 className="w-4 h-4" /> },
-  { id: 'ai-analysis', label: 'AI 分析', icon: <Brain className="w-4 h-4" /> },
-  { id: 'prompt-optimizer', label: '提示词优化', icon: <Sparkles className="w-4 h-4" /> },
-  { id: 'pattern-library', label: '模式库', icon: <Layers className="w-4 h-4" /> },
+  { id: 'prompt-optimizer', label: '智能复盘', icon: <Sparkles className="w-4 h-4" /> },
   { id: 'compare', label: '会话对比', icon: <GitMerge className="w-4 h-4" /> },
-  { id: 'aggregate', label: '多会话聚合', icon: <TrendingUp className="w-4 h-4" /> },
-  { id: 'replay', label: '会话回放', icon: <PlayCircle className="w-4 h-4" /> },
   { id: 'tokens', label: 'Token 统计', icon: <Zap className="w-4 h-4" /> },
   { id: 'timeline', label: '时间轴', icon: <Clock className="w-4 h-4" /> },
   { id: 'conversation', label: '对话流程', icon: <MessageSquare className="w-4 h-4" /> },
-  { id: 'tools', label: '工具分析', icon: <Wrench className="w-4 h-4" /> },
-  { id: 'performance', label: '性能视图', icon: <BarChart2 className="w-4 h-4" /> },
-  { id: 'realtime', label: '日志查看', icon: <FileText className="w-4 h-4" /> },
-  { id: 'history', label: '文件历史', icon: <History className="w-4 h-4" /> },
-  { id: 'export', label: '导出', icon: <Download className="w-4 h-4" /> },
-  { id: 'debug', label: '调试面板', icon: <Bug className="w-4 h-4" /> },
 ]
 
 export default function App() {
   const [logData, setLogData] = useState<ParsedLogData | null>(null)
   const [currentView, setCurrentView] = useState<ViewId>('overview')
   const [error, setError] = useState<string | null>(null)
-  const [parseWarnings, setParseWarnings] = useState<string[]>([])
   const [isLoading, setIsLoading] = useState(false)
-  const [showBudgetSettings, setShowBudgetSettings] = useState(false)
-  const [replayStartIndex, setReplayStartIndex] = useState<number>(0)
-  const { config, setConfig, resetConfig } = useBudgetContext()
+  const [isCliAnalyzing, setIsCliAnalyzing] = useState(false)
+  const [claudeCliResult, setClaudeCliResult] = useState('')
+  const [claudeCliError, setClaudeCliError] = useState<string | null>(null)
 
-  // 从指定位置开始回放
-  const startReplayFrom = useCallback((index: number) => {
-    setReplayStartIndex(index)
-    setCurrentView('replay')
+  // --- WebSocket 实时监听状态 ---
+  const [isWsConnected, setIsWsConnected] = useState(false)
+  const [discoveryList, setDiscoveryList] = useState<any[]>([])
+  const [manualPath, setManualPath] = useState('')
+  const wsRef = useRef<WebSocket | null>(null)
+  const activePathRef = useRef<string | null>(null)
+
+  // 建立 WebSocket 连接
+  useEffect(() => {
+    const ws = new WebSocket('ws://localhost:4000')
+    wsRef.current = ws
+
+    ws.onopen = () => {
+      setIsWsConnected(true)
+      console.log('[WS] 已连接到日志监听服务')
+      ws.send(JSON.stringify({ type: 'get-discovery-list' }))
+    }
+
+    ws.onclose = () => {
+      setIsWsConnected(false)
+      console.log('[WS] 连接已断开')
+    }
+
+    ws.onmessage = (event) => {
+      try {
+        const { type, payload } = JSON.parse(event.data)
+        
+        if (type === 'discovery-list') {
+          setDiscoveryList(payload)
+        } else if (type === 'log-entry') {
+          const result = parseLog(payload)
+          if (result.data.entries.length > 0) {
+            updateLogDataIncrementally(result.data.entries[0])
+          }
+        } else if (type === 'session-reset') {
+          setLogData(null)
+          setCurrentView('overview')
+        } else if (type === 'claude-analysis-start') {
+          setIsCliAnalyzing(true)
+          setClaudeCliResult('')
+          setClaudeCliError(null)
+        } else if (type === 'claude-analysis-chunk') {
+          setClaudeCliResult(prev => prev + payload)
+        } else if (type === 'claude-analysis-end') {
+          setIsCliAnalyzing(false)
+        } else if (type === 'claude-analysis-error') {
+          setIsCliAnalyzing(false)
+          setClaudeCliError(payload)
+        }
+      } catch (e) {
+        console.error('[WS] 消息解析失败', e)
+      }
+    }
+
+    return () => ws.close()
+  }, [])
+
+  const startWatching = (path: string) => {
+    if (wsRef.current && isWsConnected) {
+      setLogData(null)
+      setClaudeCliResult('')
+      activePathRef.current = path
+      wsRef.current.send(JSON.stringify({ type: 'start-watch', data: { path } }))
+      setCurrentView('overview')
+    }
+  }
+
+  const runClaudeCliAnalysis = useCallback((prompt?: string) => {
+    console.log('[DEBUG] 准备发送分析请求. WS状态:', wsRef.current?.readyState, '路径:', activePathRef.current, '自定义prompt:', prompt);
+    if (wsRef.current && isWsConnected && activePathRef.current) {
+      console.log('[DEBUG] 发送 run-claude-analysis 消息:', activePathRef.current);
+      wsRef.current.send(JSON.stringify({ type: 'run-claude-analysis', data: { path: activePathRef.current, prompt } }))
+    } else {
+      console.warn('[DEBUG] 条件不满足: wsConnected:', isWsConnected, 'path:', activePathRef.current);
+    }
+  }, [isWsConnected])
+
+  // 增量更新逻辑
+  const updateLogDataIncrementally = useCallback((newEntry: LogEntry) => {
+    setLogData(prev => {
+      if (!prev) {
+        return {
+          entries: [newEntry],
+          stats: { totalMessages: 1, userMessages: 0, assistantMessages: 0, toolCalls: 0, totalTokens: 0, inputTokens: 0, outputTokens: 0, sessionDuration: 0, modelsUsed: [] },
+          toolCalls: [], tokenUsage: [], turnDurations: []
+        }
+      }
+      const updatedEntries = [...prev.entries, newEntry];
+      const fullContent = updatedEntries.map(e => JSON.stringify(e)).join('\n');
+      return parseLog(fullContent).data;
+    })
   }, [])
 
   const handleFileLoad = useCallback((content: string) => {
     setIsLoading(true)
     setError(null)
-    setParseWarnings([])
 
-    // 使用 setTimeout 让 UI 有时间渲染加载状态
     setTimeout(() => {
       try {
         const result = parseLog(content)
         setLogData(result.data)
         setCurrentView('overview')
-
-        if (result.errors.length > 0) {
-          setParseWarnings([
-            `成功解析 ${result.data.entries.length} 条日志`,
-            `有 ${result.errors.length} 行解析失败`,
-          ])
-        }
       } catch (e) {
         setError('解析日志失败，请检查文件格式')
-        console.error(e)
       } finally {
         setIsLoading(false)
       }
     }, 50)
   }, [])
 
+  const renderDiscoveryView = () => {
+    return (
+      <div className="max-w-5xl mx-auto space-y-10 py-10 animate-in fade-in duration-700">
+        <div className="text-center space-y-3">
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-400 text-[10px] font-black uppercase tracking-[0.2em] mb-4">
+            <Activity className="w-3 h-3" /> Live Discovery
+          </div>
+          <h2 className="text-4xl font-black text-white tracking-tighter italic">
+            CLAUDE<span className="text-blue-500">OBSERVER</span>
+          </h2>
+          <p className="text-slate-400 text-lg">自动发现最近 24 小时内的活跃会话，或手动指定路径</p>
+        </div>
+
+        {/* 自动发现列表 */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {discoveryList.map(session => (
+            <button
+              key={session.fullPath}
+              onClick={() => startWatching(session.fullPath)}
+              className="flex flex-col text-left p-6 rounded-3xl border border-slate-800 bg-slate-900/40 hover:bg-slate-800/60 hover:border-blue-500/50 transition-all group relative overflow-hidden shadow-2xl backdrop-blur-sm"
+            >
+              <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-blue-500/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+              
+              <div className="flex items-center justify-between mb-6">
+                <div className="p-3 rounded-2xl bg-blue-600/10 text-blue-500 group-hover:bg-blue-600 group-hover:text-white transition-all">
+                  <Terminal className="w-6 h-6" />
+                </div>
+                <div className="text-right">
+                   <div className="text-[10px] font-black text-slate-500 uppercase">{new Date(session.lastUpdated).toLocaleDateString()}</div>
+                   <div className="text-xs font-bold text-blue-400">{new Date(session.lastUpdated).toLocaleTimeString()}</div>
+                </div>
+              </div>
+
+              <div className="mb-4">
+                <span className="text-[10px] font-black text-blue-500/80 uppercase tracking-widest block mb-1">Folder Context</span>
+                <h3 className="font-black text-slate-100 break-all text-sm leading-tight group-hover:text-blue-400 transition-colors">{session.folderName}</h3>
+              </div>
+
+              <div className="mb-6 space-y-2">
+                <div>
+                  <span className="text-[10px] font-black text-slate-600 uppercase tracking-widest block mb-1">JSONL File</span>
+                  <p className="text-[10px] text-slate-400 font-mono break-all bg-black/30 p-2 rounded-lg border border-slate-800/50">
+                    {session.id}
+                  </p>
+                </div>
+              </div>
+              
+              <div className="mt-auto pt-4 border-t border-slate-800/50 flex items-center justify-between">
+                <div className="flex gap-3">
+                   <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">JSONL</span>
+                   <span className="text-[10px] font-black text-blue-500 uppercase tracking-widest">{session.size}</span>
+                </div>
+                <div className="flex items-center gap-2 text-blue-500 font-black text-[10px] uppercase tracking-tighter group-hover:gap-3 transition-all">
+                   Watch Session <PlayCircle className="w-4 h-4" />
+                </div>
+              </div>
+            </button>
+          ))}
+          
+          {discoveryList.length === 0 && (
+            <div className="md:col-span-3 py-20 text-center border-2 border-dashed border-slate-800 rounded-3xl bg-slate-900/20">
+              <Search className="w-12 h-12 text-slate-800 mx-auto mb-4 animate-bounce" />
+              <p className="text-slate-500 text-lg font-bold">没有发现最近 24 小时的活跃会话</p>
+              <p className="text-slate-600 text-sm mt-1">请确保您已经在终端启动了 Claude 并发送了消息</p>
+              <button 
+                onClick={() => wsRef.current?.send(JSON.stringify({ type: 'get-discovery-list' }))}
+                className="mt-8 px-8 py-3 bg-slate-800 hover:bg-slate-700 text-white text-xs font-black rounded-full transition-all uppercase tracking-widest"
+              >
+                强制重新扫描目录
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* 底部双模式入口 */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8 pt-10">
+            <div className="p-8 rounded-3xl border border-slate-800 bg-slate-900/20 backdrop-blur-md relative group">
+              <div className="flex items-center gap-3 mb-6">
+                <div className="p-2 rounded-lg bg-orange-500/10 text-orange-500">
+                   <HardDrive className="w-5 h-5" />
+                </div>
+                <h3 className="text-sm font-black text-slate-300 uppercase tracking-widest">实时监听指定路径</h3>
+              </div>
+              <div className="space-y-4">
+                <input 
+                  type="text" 
+                  value={manualPath}
+                  onChange={(e) => setManualPath(e.target.value)}
+                  placeholder="粘贴 .jsonl 的绝对路径..."
+                  className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-5 py-4 text-sm text-slate-300 focus:outline-none focus:border-orange-500 focus:ring-1 focus:ring-orange-500/20 transition-all placeholder:text-slate-700"
+                />
+                <button 
+                  onClick={() => startWatching(manualPath)}
+                  disabled={!manualPath}
+                  className="w-full py-4 bg-orange-600 hover:bg-orange-500 disabled:opacity-20 text-white rounded-2xl text-xs font-black transition-all shadow-xl shadow-orange-900/20 uppercase tracking-widest"
+                >
+                  开始监听该文件
+                </button>
+              </div>
+            </div>
+
+            <div className="p-8 rounded-3xl border border-slate-800 bg-slate-900/20 backdrop-blur-md relative group">
+              <div className="flex items-center gap-3 mb-6">
+                <div className="p-2 rounded-lg bg-emerald-500/10 text-emerald-500">
+                   <Upload className="w-5 h-5" />
+                </div>
+                <h3 className="text-sm font-black text-slate-300 uppercase tracking-widest">离线分析历史文件</h3>
+              </div>
+              <div className="h-full">
+                <FileUpload onFileLoad={handleFileLoad} isDark={true} disabled={isLoading} />
+                <p className="mt-4 text-[10px] text-slate-600 font-bold uppercase tracking-tight text-center">支持拖拽或点击选择任意 JSONL 文件</p>
+              </div>
+            </div>
+        </div>
+      </div>
+    )
+  }
+
   const renderView = () => {
-    if (currentView === 'compare') {
-      return <SessionCompare defaultSession={logData || undefined} />
-    }
-    if (currentView === 'aggregate') {
-      return <SessionAggregate defaultSession={logData || undefined} />
-    }
-    if (currentView === 'replay') {
-      if (!logData) return null;
-      return <SessionReplay data={logData} startIndex={replayStartIndex} />
-    }
-    if (currentView === 'prompt-optimizer') {
-      if (!logData) return null;
-      return <PromptOptimizer data={logData} />
-    }
-    if (currentView === 'pattern-library') {
-      return (
-        <SessionPatternLibrary
-          currentSessionData={logData || undefined}
-          currentSessionName="当前会话"
-        />
-      )
-    }
+    if (currentView === 'compare') return <SessionCompare defaultSession={logData || undefined} />
+    if (currentView === 'agent-flow') return (
+      <div className="h-[calc(100vh-73px-64px)] flex flex-col">
+        <AgentFlowView data={logData} />
+      </div>
+    )
+
     if (!logData) return null
     switch (currentView) {
       case 'overview': return <SessionOverview data={logData} />
-      case 'ai-analysis': return <AIAnalysis data={logData} />
+      case 'prompt-optimizer': return (
+        <PromptOptimizer
+          data={logData}
+          cliResult={claudeCliResult}
+          isCliAnalyzing={isCliAnalyzing}
+          cliError={claudeCliError || undefined}
+          onRunCliAnalysis={runClaudeCliAnalysis}
+        />
+      )
       case 'tokens': return <TokenDashboard data={logData} />
-      case 'timeline': return <TimelineView data={logData} onStartReplay={startReplayFrom} />
+      case 'timeline': return (
+        <TimelineView
+          data={logData}
+          cliResult={claudeCliResult}
+          isCliAnalyzing={isCliAnalyzing}
+          cliError={claudeCliError || undefined}
+          onRunCliAnalysis={runClaudeCliAnalysis}
+        />
+      )
       case 'conversation': return <ConversationFlow data={logData} />
-      case 'tools': return <ToolAnalysis data={logData} />
-      case 'performance': return <PerformanceView data={logData} />
-      case 'realtime': return <RealTimeLog data={logData} onDataUpdate={(data) => setLogData(data)} />
-      case 'history': return <FileHistory data={logData} />
-      case 'export': return <ExportPanel data={logData} />
-      case 'debug': return <DebugPanel data={logData} />
     }
   }
 
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-100">
+    <div className="min-h-screen bg-slate-900 text-slate-100 selection:bg-blue-500/30 font-sans">
       {/* Header */}
-      <header className="border-b px-6 py-4 flex items-center justify-between border-slate-700 bg-slate-800/50">
+      <header className="border-b px-6 py-4 flex items-center justify-between border-slate-800 bg-slate-900/80 backdrop-blur-md sticky top-0 z-50">
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center">
-            <BarChart2 className="w-4 h-4 text-white" />
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-600 to-indigo-700 flex items-center justify-center shadow-lg shadow-blue-900/20">
+            <Activity className="w-5 h-5 text-white" />
           </div>
-          <h1 className="text-lg font-bold">Claude Log Visualizer</h1>
-        </div>
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => setShowBudgetSettings(true)}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm border transition-colors border-slate-600 hover:bg-slate-700"
-          >
-            <Settings className="w-4 h-4" />
-            预算设置
-          </button>
-          {!logData && (
-            <div className="w-48">
-              <FileUpload onFileLoad={handleFileLoad} isDark={true} disabled={isLoading} />
+          <h1 className="text-lg font-black tracking-tight">Claude Observer</h1>
+          {isWsConnected ? (
+            <div className="flex items-center gap-2 ml-4 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20">
+              <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+              <span className="text-[10px] font-black text-emerald-500 uppercase tracking-widest">Live</span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 ml-4 px-3 py-1 rounded-full bg-red-500/10 border border-red-500/20 opacity-50">
+              <div className="w-2 h-2 rounded-full bg-red-500" />
+              <span className="text-[10px] font-black text-red-500 uppercase tracking-widest">Offline</span>
             </div>
           )}
+        </div>
+        <div className="flex items-center gap-3">
           {logData && (
             <button
-              onClick={() => setLogData(null)}
-              className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm border transition-colors border-slate-600 hover:bg-slate-700"
+              onClick={() => { setLogData(null); wsRef.current?.send(JSON.stringify({ type: 'get-discovery-list' })); }}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold bg-slate-100 text-slate-900 hover:bg-white transition-all shadow-xl"
             >
-              <Upload className="w-4 h-4" />
-              重新上传
+              <Search className="w-4 h-4" />
+              切换会话
             </button>
           )}
         </div>
@@ -162,20 +330,19 @@ export default function App() {
 
       <div className="flex">
         {/* Sidebar */}
-        {(logData || currentView === 'compare' || currentView === 'aggregate' || currentView === 'replay') && (
-          <aside className="w-48 border-r min-h-screen p-3 border-slate-700 bg-slate-800/30">
-            <nav className="space-y-1">
+        {(logData || currentView === 'compare') && (
+          <aside className="w-56 border-r min-h-[calc(100vh-73px)] p-4 border-slate-800 bg-slate-900/50 sticky top-[73px]">
+            <nav className="space-y-1.5">
               {navItems.map(item => {
-                // 如果没有加载日志，只显示会话对比和多会话聚合
-                if (!logData && item.id !== 'compare' && item.id !== 'aggregate') return null;
+                if (!logData && item.id !== 'compare') return null;
                 return (
                   <button
                     key={item.id}
                     onClick={() => setCurrentView(item.id)}
-                    className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors text-left ${
+                    className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-bold transition-all ${
                         currentView === item.id
-                          ? 'bg-blue-600 text-white'
-                          : 'text-slate-300 hover:bg-slate-700'
+                          ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/40'
+                          : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'
                     }`}
                   >
                     {item.icon}
@@ -188,67 +355,28 @@ export default function App() {
         )}
 
         {/* Main content */}
-        <main className="flex-1 min-w-0 overflow-x-hidden p-6">
-          {/* 加载状态 */}
+        <main className="flex-1 min-w-0 overflow-x-hidden p-8">
           {isLoading && (
-            <div className="flex flex-col items-center justify-center min-h-[60vh] gap-4">
-              <Loader2 className="w-12 h-12 text-blue-500 animate-spin" />
-              <p className="text-slate-400">正在解析日志文件...</p>
+            <div className="flex flex-col items-center justify-center min-h-[50vh] gap-4">
+              <Loader2 className="w-10 h-10 text-blue-500 animate-spin" />
+              <p className="text-slate-500 font-medium">正在解析数据...</p>
             </div>
           )}
 
-          {/* 错误提示 */}
           {error && (
-            <div className="mb-4 p-4 bg-red-500/10 border border-red-500/30 rounded-lg text-red-400 text-sm flex items-center gap-2">
-              <AlertCircle className="w-4 h-4" />
+            <div className="mb-6 p-4 bg-red-500/10 border border-red-500/20 rounded-2xl text-red-400 text-sm flex items-center gap-3 animate-in slide-in-from-top-2">
+              <AlertCircle className="w-5 h-5" />
               {error}
             </div>
           )}
 
-          {/* 解析警告 */}
-          {parseWarnings.length > 0 && (
-            <div className="mb-4 p-4 bg-amber-500/10 border border-amber-500/30 rounded-lg text-amber-400 text-sm">
-              <div className="flex items-center gap-2 mb-2">
-                <AlertCircle className="w-4 h-4" />
-                <span className="font-semibold">解析警告</span>
-              </div>
-              <ul className="list-disc list-inside space-y-1">
-                {parseWarnings.map((warning, idx) => (
-                  <li key={idx}>{warning}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-
           {!isLoading && !logData ? (
-            <div className="flex flex-col items-center justify-center min-h-[60vh] gap-6">
-              <div className="text-center">
-                <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center mx-auto mb-4">
-                  <BarChart2 className="w-8 h-8 text-white" />
-                </div>
-                <h2 className="text-2xl font-bold mb-2">Claude Log Visualizer</h2>
-                <p className="text-sm mb-6 text-slate-400">
-                  上传 Claude Code 日志文件 (.jsonl) 开始分析
-                </p>
-              </div>
-              <div className="w-80">
-                <FileUpload onFileLoad={handleFileLoad} isDark={true} disabled={isLoading} />
-              </div>
-            </div>
+            renderDiscoveryView()
           ) : (
             renderView()
           )}
         </main>
       </div>
-
-      {/* 预算设置弹窗 */}
-      <BudgetSettings
-        isOpen={showBudgetSettings}
-        onClose={() => setShowBudgetSettings(false)}
-        config={config}
-        onSave={setConfig}
-        onReset={resetConfig}
-      />
     </div>
   )
 }

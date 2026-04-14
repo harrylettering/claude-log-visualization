@@ -1,4 +1,4 @@
-import { User, Bot, Settings, FileText, Clock } from 'lucide-react';
+import { User, Bot, Settings, Clock } from 'lucide-react';
 import type { LogEntry } from '../types/log';
 import { UI_COLORS, MESSAGE_PREVIEW_LENGTH } from '../constants';
 
@@ -10,8 +10,6 @@ export function getEntryIcon(type: string) {
       return <Bot className="w-4 h-4" />;
     case 'system':
       return <Settings className="w-4 h-4" />;
-    case 'file-history-snapshot':
-      return <FileText className="w-4 h-4" />;
     default:
       return <Clock className="w-4 h-4" />;
   }
@@ -25,8 +23,6 @@ export function getEntryColor(type: string) {
       return UI_COLORS.assistant.dot;
     case 'system':
       return UI_COLORS.system.dot;
-    case 'file-history-snapshot':
-      return UI_COLORS.fileHistory.dot;
     default:
       return UI_COLORS.default.dot;
   }
@@ -40,8 +36,6 @@ export function getEntryBg(type: string) {
       return `${UI_COLORS.assistant.bg} ${UI_COLORS.assistant.border}`;
     case 'system':
       return `${UI_COLORS.system.bg} ${UI_COLORS.system.border}`;
-    case 'file-history-snapshot':
-      return `${UI_COLORS.fileHistory.bg} ${UI_COLORS.fileHistory.border}`;
     default:
       return `${UI_COLORS.default.bg} ${UI_COLORS.default.border}`;
   }
@@ -72,9 +66,6 @@ export function getMessagePreview(entry: LogEntry): string {
         }
       }
     }
-  }
-  if (entry.type === 'file-history-snapshot') {
-    return '文件历史快照';
   }
   if (entry.type === 'system' && entry.subtype === 'turn_duration') {
     return `轮次时长: ${entry.durationMs}ms`;

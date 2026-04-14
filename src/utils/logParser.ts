@@ -7,13 +7,12 @@ import type {
   ContentBlock,
   ToolUseBlock,
   ToolResultBlock,
-  TextBlock,
 } from '../types/log';
+import type { AgentAction } from '../types/agent';
 import {
   MAX_TOKEN_VALUE,
-  TOKEN_FORMATTING,
-  TIME_FORMATTING,
 } from '../constants';
+import { saveImage } from './imageStore';
 
 // 解析错误类型
 export interface ParseError {
@@ -27,159 +26,230 @@ export interface ParseResult {
   errors: ParseError[];
 }
 
+// ============ Agent Action 解析 ============
+
+function createInitialAgentAction(toolUse: ToolUseBlock): AgentAction | undefined {
+  const name = toolUse.name.toLowerCase();
+  const input = toolUse.input as any;
+
+  // 1. 终端执行
+  if (name === 'bash' || name === 'run' || name === 'execute_command') {
+    const cmd = (input.command || input.script || '').trim();
+    if (cmd.startsWith('rm ') || cmd.includes(' rm ')) {
+       return { type: 'CodeDelete', filePath: cmd.split(' ').pop() || cmd, instruction: 'Executed via terminal' };
+    }
+    return {
+      type: 'TerminalCommand',
+      command: cmd,
+      exitCode: -1,
+      output: '',
+    };
+  }
+
+  // 2. 写操作
+  if (name === 'edit' || name === 'replace' || name === 'write' || name === 'write_to_file' || name === 'str_replace_editor' || name === 'create' || name === 'save') {
+    const isView = input.command === 'view' || input.command === 'list_files';
+    if (isView) {
+      return {
+        type: 'CodeRead',
+        filePath: input.path || input.file_path || '',
+        tokens: 0,
+      };
+    }
+    return {
+      type: 'CodeWrite',
+      filePath: input.path || input.file_path || '',
+      before: input.old_str || input.old_string || '',
+      after: input.new_str || input.new_string || input.content || input.insert_line || '',
+      instruction: input.instruction || `Command: ${input.command || 'write'}`
+    };
+  }
+
+  // 3. 删操作
+  if (name === 'delete' || name === 'remove' || name === 'rm' || name === 'delete_file') {
+    return {
+      type: 'CodeDelete',
+      filePath: input.path || input.file_path || '',
+      instruction: input.reason || ''
+    };
+  }
+
+  // 4. 移操作
+  if (name === 'move' || name === 'rename' || name === 'mv') {
+    return {
+      type: 'CodeMove',
+      sourcePath: input.source || input.old_path || input.from || '',
+      targetPath: input.destination || input.new_path || input.to || ''
+    };
+  }
+
+  // 5. 搜操作
+  if (name === 'grep' || name === 'find' || name === 'search') {
+    return {
+      type: 'CodeSearch',
+      query: input.query || input.pattern || input.regex || '',
+      path: input.path || input.dir || ''
+    };
+  }
+
+  // 6. 读操作
+  if (name === 'view' || name === 'read_file' || name === 'glob' || name === 'list_files' || name === 'ls') {
+    return {
+      type: 'CodeRead',
+      filePath: input.path || input.pattern || input.file_path || input.dir_path || '',
+      tokens: 0,
+    };
+  }
+
+  // 7. 多模态 GUI 操作
+  if (name === 'computer' || name === 'computer_use' || input.action) {
+    const actionType = input.action || 'unknown';
+    if (actionType === 'screenshot') {
+       return { type: 'ScreenCapture', imageId: '', description: 'Taking a screenshot' };
+    }
+    return {
+      type: 'ComputerUse',
+      actionType,
+      coordinate: input.coordinate ? [input.coordinate[0], input.coordinate[1]] : undefined,
+      text: input.text || '',
+      description: `Action: ${actionType}`
+    };
+  }
+
+  // 8. 任务管理工具
+  if (name === 'TaskCreate') {
+    return {
+      type: 'TaskCreate',
+      subject: input.subject || '',
+      description: input.description || '',
+      activeForm: input.activeForm
+    };
+  }
+
+  if (name === 'TaskUpdate') {
+    return {
+      type: 'TaskUpdate',
+      taskId: input.taskId || '',
+      status: input.status,
+      subject: input.subject
+    };
+  }
+
+  // 所有其他未知工具，统一用通用类型
+  return {
+    type: 'GenericToolCall',
+    name: name,
+    input: input,
+    description: `Tool: ${name}`
+  };
+
+}
+
+function setParsedActionWithPriority(entry: LogEntry, newAction: AgentAction) {
+  if (!entry.parsedAction) {
+    entry.parsedAction = newAction;
+    return;
+  }
+  const priority = { 'CodeWrite': 4, 'CodeDelete': 4, 'CodeMove': 4, 'ComputerUse': 3, 'ScreenCapture': 3, 'TerminalCommand': 2, 'UserImage': 2, 'CodeRead': 1, 'CodeSearch': 1, 'AgentThought': 0 };
+  const currentPrio = (priority as any)[entry.parsedAction.type] || 0;
+  const newPrio = (priority as any)[newAction.type] || 0;
+  if (newPrio >= currentPrio) {
+    entry.parsedAction = newAction;
+  }
+}
+
+function updateAgentActionWithResult(action: AgentAction, result: any, isError: boolean, entryId: string) {
+  if (Array.isArray(result)) {
+     const imageBlock = result.find(b => b.type === 'image' && b.source && b.source.data);
+     if (imageBlock && (action.type === 'ScreenCapture' || action.type === 'ComputerUse')) {
+        const imageId = `img_${entryId}`;
+        saveImage(imageId, imageBlock.source.data).catch(console.error);
+        if (action.type === 'ScreenCapture') action.imageId = imageId;
+     }
+  }
+  const resultText = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+
+  // 1. 终端命令结果
+  if (action.type === 'TerminalCommand') {
+    action.output = resultText;
+    action.exitCode = isError ? 1 : 0;
+    if (isError) action.stderr = resultText;
+  }
+
+  // 2. 文件读取结果
+  if (action.type === 'CodeRead') {
+    action.content = resultText;
+  }
+
+  // 3. 搜索结果
+  if (action.type === 'CodeSearch') {
+    action.results = resultText;
+  }
+}
+
 // ============ 分类函数 ============
 
 export function categorizeEntry(entry: LogEntry): EntryCategory {
-  // 特殊类型
   if (entry.type === 'summary') return 'SUMMARY';
   if (entry.type === 'system') return 'SYSTEM';
-  if (entry.type === 'file_history' || entry.type === 'file-history-snapshot') {
-    return 'FILE_HISTORY';
-  }
+  if (entry.type === 'file_history' || entry.type === 'file-history-snapshot') return 'FILE_HISTORY';
 
-  // Assistant 消息
   if (entry.type === 'assistant') {
     const content = entry.message?.content || [];
     const contentArray = Array.isArray(content) ? content : [];
-
-    const hasThinking = contentArray.some((b) => b.type === 'thinking');
-    const hasToolUse = contentArray.some((b) => b.type === 'tool_use');
-    const hasText = contentArray.some((b) => b.type === 'text');
-
-    if (hasToolUse) return 'ASSISTANT_TOOL_CALL';
-    if (hasThinking && hasText) return 'ASSISTANT_THINKING_RESPONSE';
+    if (contentArray.some((b) => b.type === 'tool_use')) return 'ASSISTANT_TOOL_CALL';
+    if (contentArray.some((b) => b.type === 'thinking')) return 'ASSISTANT_THINKING_RESPONSE';
     return 'ASSISTANT_TEXT';
   }
 
-  // User 消息
   if (entry.type === 'user') {
     const content = entry.message?.content;
-
-    // 纯字符串 content → 真实用户输入
     if (typeof content === 'string') return 'USER_INPUT';
-
     if (Array.isArray(content)) {
-      const hasToolResult = content.some((b) => b.type === 'tool_result');
-
-      if (hasToolResult) {
-        // 有 toolUseResult → agent 子任务结果
-        if (entry.toolUseResult) return 'AGENT_RESULT';
-
-        // 有 is_error → 工具错误/权限拒绝
-        const hasError = content.some(
-          (b) => b.type === 'tool_result' && (b as ToolResultBlock).is_error
-        );
-        if (hasError) return 'TOOL_ERROR';
-
-        return 'TOOL_RESULT';
-      }
-
-      // 检查 /model 等斜杠命令
-      const textContent = content
-        .filter((b): b is TextBlock => b.type === 'text')
-        .map((b) => b.text)
-        .join('');
-      if (textContent.trim().startsWith('/')) return 'SLASH_COMMAND';
-
-      // 有图片 → 带图用户输入
-      const hasImage = content.some((b) => b.type === 'image');
-      if (hasImage) return 'USER_INPUT_WITH_IMAGE';
-
+      if (content.some((b) => b.type === 'tool_result')) return 'TOOL_RESULT';
+      if (content.some((b) => b.type === 'image')) return 'USER_INPUT_WITH_IMAGE';
       return 'USER_INPUT';
     }
   }
-
   return 'UNKNOWN';
 }
-
-// ============ 判断是否为真实用户输入 ============
 
 export function isRealUserInput(entry: LogEntry): boolean {
   const category = entry._category || categorizeEntry(entry);
   return category === 'USER_INPUT' || category === 'USER_INPUT_WITH_IMAGE';
 }
 
-// ============ 判断是否为用户消息（含工具结果） ============
-
-export function isUserMessage(entry: LogEntry): boolean {
-  return entry.type === 'user';
-}
-
-// ============ 判断是否为工具结果消息 ============
-
-export function isToolResultMessage(entry: LogEntry): boolean {
-  const category = entry._category || categorizeEntry(entry);
-  return category === 'TOOL_RESULT' || category === 'TOOL_ERROR' || category === 'AGENT_RESULT';
-}
-
-// ============ 从用户消息中提取文本内容 ============
-
 export function extractUserText(entry: LogEntry): string {
-  if (!isRealUserInput(entry)) return '';
-
   const content = entry.message?.content;
   if (typeof content === 'string') return content;
-
   if (Array.isArray(content)) {
-    return content
-      .filter((b): b is TextBlock => b.type === 'text')
-      .map((b) => b.text)
-      .join('\n');
+    return content.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n');
   }
-
   return '';
 }
 
-// ============ Token 处理 ============
-
 function sanitizeTokenValue(val: unknown): number {
   const num = typeof val === 'number' ? val : Number(val);
-  if (isNaN(num) || num < 0) return 0;
-  if (num > MAX_TOKEN_VALUE) return 0;
-  return num;
+  return (isNaN(num) || num < 0 || num > MAX_TOKEN_VALUE) ? 0 : num;
 }
 
-function extractTokenUsage(entry: LogEntry): { inputTokens: number; outputTokens: number; totalTokens: number } | null {
-  if (entry.type !== 'assistant') {
-    return null;
-  }
-
+function extractTokenUsage(entry: LogEntry) {
   const usage = entry.message?.usage;
   if (!usage) return null;
-
   const inputTokens = sanitizeTokenValue(usage.input_tokens);
   const outputTokens = sanitizeTokenValue(usage.output_tokens);
-  const totalTokens = sanitizeTokenValue(
-    (usage as any).total_tokens ?? (inputTokens + outputTokens)
-  );
-
-  if (inputTokens > 0 || outputTokens > 0) {
-    return {
-      inputTokens,
-      outputTokens,
-      totalTokens: totalTokens > 0 ? totalTokens : inputTokens + outputTokens,
-    };
-  }
-
-  return null;
+  const totalTokens = sanitizeTokenValue((usage as any).total_tokens ?? (inputTokens + outputTokens));
+  return { inputTokens, outputTokens, totalTokens };
 }
 
 function getTimestamp(entry: LogEntry): number {
-  const ts = entry.timestamp;
-  if (!ts) return NaN;
-  return new Date(ts).getTime();
+  return entry.timestamp ? new Date(entry.timestamp).getTime() : NaN;
 }
-
-// ============ 工具调用处理 ============
 
 function extractToolUseFromContent(contentItem: ContentBlock): { id: string; name: string; input: unknown } | null {
   if (contentItem.type === 'tool_use') {
     const toolUse = contentItem as ToolUseBlock;
-    return {
-      id: toolUse.id,
-      name: toolUse.name,
-      input: toolUse.input,
-    };
+    return { id: toolUse.id, name: toolUse.name, input: toolUse.input };
   }
   return null;
 }
@@ -187,11 +257,7 @@ function extractToolUseFromContent(contentItem: ContentBlock): { id: string; nam
 function processToolResult(contentItem: ContentBlock): { toolUseId: string; content: unknown; isError: boolean } | null {
   if (contentItem.type === 'tool_result') {
     const result = contentItem as ToolResultBlock;
-    return {
-      toolUseId: result.tool_use_id,
-      content: result.content,
-      isError: Boolean(result.is_error),
-    };
+    return { toolUseId: result.tool_use_id, content: result.content, isError: Boolean(result.is_error) };
   }
   return null;
 }
@@ -204,192 +270,266 @@ export function parseLog(content: string): ParseResult {
   const toolCalls: ToolCall[] = [];
   const tokenUsage: ParsedLogData['tokenUsage'] = [];
   const turnDurations: ParsedLogData['turnDurations'] = [];
-  const fileHistory: ParsedLogData['fileHistory'] = [];
   const errors: ParseError[] = [];
-
   const pendingToolCalls = new Map<string, ToolCall>();
   const validTimestamps: number[] = [];
 
   lines.forEach((line, lineIndex) => {
     try {
       const entry = JSON.parse(line) as LogEntry;
-
-      // 添加分类
       entry._category = categorizeEntry(entry);
-
       entries.push(entry);
 
-      // 收集有效时间戳
       const ts = getTimestamp(entry);
-      if (!isNaN(ts)) {
-        validTimestamps.push(ts);
-      }
+      if (!isNaN(ts)) validTimestamps.push(ts);
 
-      // 尝试提取 token 使用量
-      const usage = extractTokenUsage(entry);
-      if (usage) {
-        tokenUsage.push({
-          timestamp: entry.timestamp,
-          inputTokens: usage.inputTokens,
-          outputTokens: usage.outputTokens,
-          totalTokens: usage.totalTokens,
-        });
-      }
-
-      // 处理 assistant 消息中的工具调用
+      // Assistant 消息处理
       if (entry.type === 'assistant' && entry.message) {
-        const content = entry.message.content;
-        const contentArray = Array.isArray(content) ? content : [];
+        const contentArray = Array.isArray(entry.message.content) ? entry.message.content : [];
+        let hasToolUse = false;
+        let assistantText = '';
 
-        contentArray.forEach((contentItem) => {
-          const toolUse = extractToolUseFromContent(contentItem);
+        contentArray.forEach((item) => {
+          if (item.type === 'thinking') {
+            setParsedActionWithPriority(entry, { type: 'AgentThought', text: (item as any).thinking });
+          } else if (item.type === 'text') {
+            assistantText += (item as any).text + '\n';
+          }
+          const toolUse = extractToolUseFromContent(item);
           if (toolUse) {
-            const toolCall: ToolCall = {
-              id: toolUse.id,
-              name: toolUse.name,
-              input: toolUse.input,
-              timestamp: entry.timestamp,
-            };
+            hasToolUse = true;
+            const toolCall: ToolCall = { id: toolUse.id, name: toolUse.name, input: toolUse.input, timestamp: entry.timestamp };
             pendingToolCalls.set(toolCall.id, toolCall);
+            const action = createInitialAgentAction(item as ToolUseBlock);
+            if (action) {
+              setParsedActionWithPriority(entry, action);
+              (toolCall as any).sourceEntry = entry;
+            }
           }
         });
+
+        // 如果是纯文本回复，没有工具调用，就生成AssistantText action
+        if (!hasToolUse && assistantText.trim()) {
+          setParsedActionWithPriority(entry, { type: 'AssistantText', content: assistantText.trim() });
+        }
       }
 
-      // 处理 user 消息中的工具结果
-      if (entry.type === 'user' && entry.message) {
-        const content = entry.message.content;
-        const contentArray = Array.isArray(content) ? content : [];
+      // Sub-agent 任务处理
+      if (entry.toolUseResult?.content) {
+        entry.toolUseResult.content.forEach((item) => {
+          const action = createInitialAgentAction(item as any);
+          if (action) setParsedActionWithPriority(entry, action);
+        });
+      }
 
-        contentArray.forEach((contentItem) => {
-          const result = processToolResult(contentItem);
-          if (result && result.toolUseId) {
+      // User 消息处理
+      if (entry.type === 'user' && entry.message) {
+        const contentArray = Array.isArray(entry.message.content) ? entry.message.content : [];
+        let userText = '';
+        let hasImage = false;
+        let hasToolResult = false;
+
+        contentArray.forEach((item) => {
+          // 用户上传图片
+          if (item.type === 'image' && (item as any).source?.data) {
+            hasImage = true;
+            const imageId = `user_img_${entry.uuid}`;
+            saveImage(imageId, (item as any).source.data).catch(console.error);
+            setParsedActionWithPriority(entry, { type: 'UserImage', imageId, description: 'User upload' });
+          } else if (item.type === 'text') {
+            userText += (item as any).text + '\n';
+          }
+          // 工具结果匹配
+          const result = processToolResult(item);
+          if (result?.toolUseId) {
+            hasToolResult = true;
             const toolCall = pendingToolCalls.get(result.toolUseId);
             if (toolCall) {
               toolCall.result = result.content;
               toolCall.isError = result.isError;
               toolCalls.push(toolCall);
               pendingToolCalls.delete(result.toolUseId);
+              const sourceEntry = (toolCall as any).sourceEntry as LogEntry | undefined;
+              if (sourceEntry?.parsedAction) {
+                updateAgentActionWithResult(sourceEntry.parsedAction, result.content, result.isError, entry.uuid);
+              }
+            } else {
+              // 匹配不到对应调用的工具结果，直接生成TaskResult action
+              const resultText = typeof result.content === 'string' ? result.content : JSON.stringify(result.content, null, 2);
+              setParsedActionWithPriority(entry, {
+                type: 'TaskResult',
+                toolUseId: result.toolUseId,
+                content: resultText,
+                isError: result.isError
+              });
             }
           }
         });
+
+        // 处理直接挂载在entry上的toolUseResult（非content里的tool result
+        if (!hasToolResult && entry.toolUseResult) {
+          hasToolResult = true;
+          // 从toolUseResult生成TaskResult
+          const resultContent = entry.toolUseResult.content
+            ? (typeof entry.toolUseResult.content === 'string'
+              ? entry.toolUseResult.content
+              : JSON.stringify(entry.toolUseResult.content, null, 2))
+            : JSON.stringify(entry.toolUseResult, null, 2);
+
+          setParsedActionWithPriority(entry, {
+            type: 'TaskResult',
+            toolUseId: entry.toolUseResult.status === 'error' ? `error-${entry.uuid}` : entry.uuid,
+            content: resultContent,
+            isError: entry.toolUseResult.status === 'error'
+          });
+        }
+
+        // 如果是纯文本消息，没有图片和工具结果，生成UserMessage action
+        if (!hasImage && !hasToolResult && userText.trim()) {
+          setParsedActionWithPriority(entry, { type: 'UserMessage', content: userText.trim() });
+        }
       }
 
-      // 处理系统 turn duration
+      // Token & 统计
+      const usage = extractTokenUsage(entry);
+      if (usage) {
+        tokenUsage.push({ timestamp: entry.timestamp, ...usage });
+        if (entry.parsedAction) {
+          entry.parsedAction.usage = { input: usage.inputTokens, output: usage.outputTokens, total: usage.totalTokens };
+        }
+      }
+
       if (entry.type === 'system' && (entry.subtype === 'turn_duration' || entry.durationMs)) {
-        turnDurations.push({
-          timestamp: entry.timestamp,
-          durationMs: entry.durationMs || 0,
-          messageCount: entry.messageCount || 0,
-        });
-      }
-
-      // 处理文件历史快照
-      if (entry.type === 'file-history-snapshot' || entry.snapshot) {
-        fileHistory.push({
-          timestamp: entry.timestamp,
-          messageId: entry.uuid || '',
-          files: (entry.snapshot?.trackedFileBackups || entry.snapshot || {}) as Record<string, unknown>,
-        });
+        turnDurations.push({ timestamp: entry.timestamp, durationMs: entry.durationMs || 0, messageCount: entry.messageCount || 0 });
       }
     } catch (e) {
-      const error = e instanceof Error ? e : new Error(String(e));
-      errors.push({
-        line: lineIndex + 1,
-        raw: line,
-        error,
-      });
-      console.warn(`Failed to parse line ${lineIndex + 1}:`, error);
+      errors.push({ line: lineIndex + 1, raw: line, error: e as Error });
     }
   });
 
-  // 添加剩余的待处理工具调用
   toolCalls.push(...pendingToolCalls.values());
+  const stats = calculateStats(entries, tokenUsage, toolCalls, turnDurations, validTimestamps);
 
-  const stats = calculateStats(entries, tokenUsage, toolCalls, turnDurations, fileHistory, validTimestamps);
-
-  return {
-    data: {
-      entries,
-      stats,
-      toolCalls,
-      tokenUsage,
-      turnDurations,
-      fileHistory,
-    },
-    errors,
-  };
+  return { data: { entries, stats, toolCalls, tokenUsage, turnDurations }, errors };
 }
 
-// ============ 统计计算 ============
+function calculateStats(entries: LogEntry[], tokenUsage: any[], toolCalls: ToolCall[], _durations: any[], validTimestamps: number[]): SessionStats {
+  const userMessages = entries.filter(isRealUserInput).length;
+  const assistantMessages = entries.filter(e => e.type === 'assistant').length;
+  let inT = 0, outT = 0, totT = 0;
+  tokenUsage.forEach(t => { inT += t.inputTokens; outT += t.outputTokens; totT += t.totalTokens; });
+  const duration = validTimestamps.length >= 2 ? Math.max(...validTimestamps) - Math.min(...validTimestamps) : 0;
+  const models = Array.from(new Set(entries.map(e => e.message?.model).filter(Boolean) as string[]));
 
-function calculateStats(
-  entries: LogEntry[],
-  tokenUsage: ParsedLogData['tokenUsage'],
-  toolCalls: ToolCall[],
-  _turnDurations: ParsedLogData['turnDurations'],
-  fileHistory: ParsedLogData['fileHistory'],
-  validTimestamps: number[]
-): SessionStats {
-  const userMessages = entries.filter((e) => isRealUserInput(e)).length;
-  const assistantMessages = entries.filter((e) => e.type === 'assistant').length;
-
-  let totalTokens = 0;
-  let inputTokens = 0;
-  let outputTokens = 0;
-
-  tokenUsage.forEach((t) => {
-    const inTok = t.inputTokens || 0;
-    const outTok = t.outputTokens || 0;
-    const totTok = t.totalTokens || (inTok + outTok);
-
-    inputTokens += inTok;
-    outputTokens += outTok;
-    totalTokens += totTok;
-  });
-
-  let sessionDuration = 0;
-  if (validTimestamps.length >= 2) {
-    const firstTime = Math.min(...validTimestamps);
-    const lastTime = Math.max(...validTimestamps);
-    sessionDuration = lastTime - firstTime;
-  }
-
-  const modelsUsed = new Set<string>();
-  entries.forEach((entry) => {
-    const model = entry.message?.model;
-    if (model) {
-      modelsUsed.add(String(model));
-    }
-  });
-
-  return {
-    totalMessages: entries.length,
-    userMessages,
-    assistantMessages,
-    toolCalls: toolCalls.length,
-    totalTokens,
-    inputTokens,
-    outputTokens,
-    sessionDuration,
-    filesModified: fileHistory.length,
-    modelsUsed: Array.from(modelsUsed),
-  };
+  return { totalMessages: entries.length, userMessages, assistantMessages, toolCalls: toolCalls.length, totalTokens: totT, inputTokens: inT, outputTokens: outT, sessionDuration: duration, modelsUsed: models };
 }
-
-// ============ 格式化函数 ============
 
 export function formatDuration(ms: number): string {
   if (isNaN(ms) || ms <= 0) return '0m 0s';
-  if (ms < TIME_FORMATTING.SECOND_MS) return `${ms}ms`;
-  if (ms < TIME_FORMATTING.MINUTE_MS) return `${(ms / TIME_FORMATTING.SECOND_MS).toFixed(1)}s`;
-  const minutes = Math.floor(ms / TIME_FORMATTING.MINUTE_MS);
-  const seconds = Math.floor((ms % TIME_FORMATTING.MINUTE_MS) / TIME_FORMATTING.SECOND_MS);
-  return `${minutes}m ${seconds}s`;
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.floor(ms / 60000)}m ${Math.floor((ms % 60000) / 1000)}s`;
 }
 
 export function formatTokens(tokens: number): string {
   if (isNaN(tokens) || tokens < 0) return '0';
-  if (tokens >= TOKEN_FORMATTING.MILLION) return `${(tokens / TOKEN_FORMATTING.MILLION).toFixed(2)}M`;
-  if (tokens >= TOKEN_FORMATTING.THOUSAND) return `${(tokens / TOKEN_FORMATTING.THOUSAND).toFixed(1)}K`;
+  if (tokens >= 1000000) return `${(tokens / 1000000).toFixed(2)}M`;
+  if (tokens >= 1000) return `${(tokens / 1000).toFixed(1)}K`;
   return tokens.toString();
+}
+
+// --- 压缩会话用于 AI 分析 ---
+export function compressLogEntries(entries: LogEntry[]): string {
+  const compressedLines: string[] = [];
+
+  for (const entry of entries) {
+    const timestamp = entry.timestamp ? new Date(entry.timestamp).toLocaleTimeString() : '未知时间';
+
+    // 用户消息
+    if (entry.type === 'user') {
+      let userText = '';
+      if (typeof entry.message?.content === 'string') {
+        userText = entry.message.content;
+      } else if (Array.isArray(entry.message?.content)) {
+        userText = entry.message.content
+          .filter(block => (block as any).type === 'text')
+          .map(block => (block as any).text)
+          .join('\n');
+      }
+      if (userText.trim()) {
+        const truncated = userText.trim().slice(0, 300);
+        compressedLines.push(`[${timestamp}] 用户: ${truncated}${userText.length > 300 ? '...' : ''}`);
+      }
+      continue;
+    }
+
+    // AI 消息
+    if (entry.type === 'assistant') {
+      const contentBlocks = Array.isArray(entry.message?.content) ? entry.message.content : [];
+
+      // 提取 thinking
+      const thinkingBlock = contentBlocks.find(block => block.type === 'thinking');
+      if ((thinkingBlock as any)?.thinking) {
+        const shortThinking = (thinkingBlock as any).thinking.slice(0, 200) + ((thinkingBlock as any).thinking.length > 200 ? '...' : '');
+        compressedLines.push(`[${timestamp}] AI思考: ${shortThinking}`);
+      }
+
+      // 提取工具调用
+      const toolUseBlocks = contentBlocks.filter(block => block.type === 'tool_use');
+      for (const toolUse of toolUseBlocks) {
+        const toolUseTyped = toolUse as ToolUseBlock;
+        const name = toolUseTyped.name.toLowerCase();
+        const input = (toolUseTyped.input || {}) as Record<string, unknown>;
+
+        if (name === 'bash' || name === 'execute_command') {
+          const cmd = ((input.command as string) || (input.script as string) || '').trim();
+          const truncated = cmd.slice(0, 300);
+          compressedLines.push(`[${timestamp}] AI执行命令: ${truncated}${cmd.length > 300 ? '...' : ''}`);
+        } else if (name === 'edit' || name === 'write' || name === 'str_replace_editor') {
+          const filePath = input.path || input.file_path || '未知文件';
+          const action = input.command === 'view' ? '查看文件' : '修改文件';
+          compressedLines.push(`[${timestamp}] AI${action}: ${filePath}`);
+        } else if (name === 'delete' || name === 'remove') {
+          const filePath = input.path || input.file_path || '未知文件';
+          compressedLines.push(`[${timestamp}] AI删除文件: ${filePath}`);
+        } else if (name === 'move' || name === 'rename' || name === 'mv') {
+          const from = input.source || input.from || '旧路径';
+          const to = input.destination || input.to || '新路径';
+          compressedLines.push(`[${timestamp}] AI重命名/移动: ${from} → ${to}`);
+        } else if (name === 'grep' || name === 'search' || name === 'find') {
+          const query = input.query || input.pattern || '';
+          compressedLines.push(`[${timestamp}] AI搜索: ${query}`);
+        } else if (name === 'view' || name === 'read_file' || name === 'glob' || name === 'ls') {
+          const filePath = input.path || input.pattern || input.file_path || '';
+          compressedLines.push(`[${timestamp}] AI读取/列出文件: ${filePath}`);
+        } else if (name === 'computer' || name === 'computer_use') {
+          const action = input.action || '未知操作';
+          compressedLines.push(`[${timestamp}] AI操作电脑: ${action}`);
+        } else {
+          compressedLines.push(`[${timestamp}] AI调用工具: ${name}`);
+        }
+      }
+
+      // 提取文本回复
+      const textBlocks = contentBlocks.filter(block => block.type === 'text');
+      if (textBlocks.length > 0) {
+        const text = textBlocks.map(block => (block as any).text).join('\n').trim();
+        if (text) {
+          const truncated = text.slice(0, 500);
+          compressedLines.push(`[${timestamp}] AI回复: ${truncated}${text.length > 500 ? '...' : ''}`);
+        }
+      }
+
+      // 工具结果（错误才记录）
+      const toolResultBlocks = contentBlocks.filter(block => block.type === 'tool_result' && (block as any).is_error);
+      for (const result of toolResultBlocks) {
+        const resultTyped = result as ToolResultBlock;
+        const errorContent = typeof resultTyped.content === 'string' ? resultTyped.content : JSON.stringify(resultTyped.content);
+        const truncated = errorContent.slice(0, 300);
+        compressedLines.push(`[${timestamp}] 工具执行错误: ${truncated}${errorContent.length > 300 ? '...' : ''}`);
+      }
+    }
+  }
+
+  return compressedLines.join('\n');
 }

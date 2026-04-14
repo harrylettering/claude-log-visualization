@@ -1,10 +1,8 @@
-import { useMemo, useEffect } from 'react';
+import { useMemo } from 'react';
 import { MessageCircle, Settings, Clock, FileText, Zap, DollarSign } from 'lucide-react';
 import type { ParsedLogData } from '../types/log';
 import { formatDuration, formatTokens } from '../utils/logParser';
 import { PRICING } from '../constants';
-import { useBudgetContext } from '../contexts/BudgetContext';
-import { BudgetProgress } from './BudgetProgress';
 
 interface SessionOverviewProps {
   data: ParsedLogData;
@@ -20,21 +18,6 @@ interface StatCard {
 
 export function SessionOverview({ data }: SessionOverviewProps) {
   const { stats } = data;
-  const { updateSessionCost, removeSessionCost, budgetUsage, currentBudget } = useBudgetContext();
-
-  // 计算当前会话成本
-  const sessionCost = useMemo(() => {
-    const inputCost = stats.inputTokens * (PRICING.INPUT_PER_MTOK / 1_000_000);
-    const outputCost = stats.outputTokens * (PRICING.OUTPUT_PER_MTOK / 1_000_000);
-    return inputCost + outputCost;
-  }, [stats.inputTokens, stats.outputTokens]);
-
-  // 更新会话成本到预算管理器
-  useEffect(() => {
-    const sessionId = data.entries[0]?.uuid || 'single-session';
-    updateSessionCost(sessionId, sessionCost);
-    return () => removeSessionCost(sessionId);
-  }, [sessionCost, updateSessionCost, removeSessionCost, data.entries]);
 
   // 使用 useMemo 缓存卡片数据
   const cards: StatCard[] = useMemo(() => [
@@ -155,11 +138,6 @@ export function SessionOverview({ data }: SessionOverviewProps) {
           * 基于 Claude 3.5 Sonnet 定价估算 (${PRICING.INPUT_PER_MTOK}/MTok 输入, ${PRICING.OUTPUT_PER_MTOK}/MTok 输出)
         </p>
       </div>
-
-      {/* 预算进度 */}
-      {currentBudget > 0 && (
-        <BudgetProgress usage={budgetUsage} />
-      )}
 
       {/* 使用的模型 */}
       {stats.modelsUsed.length > 0 && (

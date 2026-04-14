@@ -1,213 +1,200 @@
-import { useState, useEffect, useCallback } from 'react';
-import { Sparkles, Brain, BookOpen, Download, AlertCircle, RefreshCw } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import { Info, FileJson, Brain, Loader2, Zap, ArrowRight, Terminal, RefreshCw } from 'lucide-react';
 import type { ParsedLogData } from '../types/log';
-import { analyzePrompts } from '../utils/promptAnalyzer';
-import { templateManager } from '../utils/templateManager';
-import { PromptAnalysis } from './PromptAnalysis';
-import { PromptSuggestions } from './PromptSuggestions';
-import { PromptAIAnalysis } from './PromptAIAnalysis';
-import { TemplateLibrary } from './TemplateLibrary';
+import type { Lesson } from '../utils/rulesExtractor';
+import { extractLessons } from '../utils/rulesExtractor';
+import { ActionCardRenderer } from './AgentActionCards';
 
 interface PromptOptimizerProps {
   data: ParsedLogData;
+  cliResult?: string;
+  isCliAnalyzing?: boolean;
+  onRunCliAnalysis?: (prompt?: string) => void;
+  cliError?: string;
 }
 
-type TabId = 'analysis' | 'suggestions' | 'templates' | 'export';
+export const PromptOptimizer: React.FC<PromptOptimizerProps> = ({ data, cliResult, isCliAnalyzing, onRunCliAnalysis, cliError: _cliError }) => {
+  const [_copiedId, _setCopiedId] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'cli' | 'rules'>('cli');
+  const [customPrompt, setCustomPrompt] = useState<string>('');
 
-export function PromptOptimizer({ data }: PromptOptimizerProps) {
-  const [activeTab, setActiveTab] = useState<TabId>('analysis');
-  const [analysis, setAnalysis] = useState(analyzePrompts(data));
-  const [showDeepAnalysis, setShowDeepAnalysis] = useState(false);
+  const defaultPrompt = `你是一位顶级的 AI 协作专家。请阅读以下对话日志（已结构化压缩），并进行深度复盘。
+请直接给出以下内容：
+1. 协作总结：一句话概括表现。
+2. 成功经验：哪些做法值得保持？
+3. 避坑指南：哪些做法导致了低效或错误？
+4. 优化建议：针对未来的 3 条具体改进方案。
+请使用清晰的 Markdown 格式输出。`;
 
-  useEffect(() => {
-    setAnalysis(analyzePrompts(data));
-  }, [data]);
+  // 基础规则提取 (启发式)
+  const lessons: Lesson[] = useMemo(() => extractLessons(data.entries), [data.entries]);
 
-  const handleReanalyze = useCallback(() => {
-    setAnalysis(analyzePrompts(data));
-  }, [data]);
+  // 导出复盘文档
+  const exportRetrospective = () => {
+    const timestamp = new Date().toLocaleString('zh-CN');
+    let content = `# Claude 会话复盘报告\n\n生成时间：${timestamp}\n\n---\n\n## 终端复盘总结\n\n${cliResult || '暂无终端复盘结果'}\n\n---\n\n## 自动提取经验规则\n\n`;
 
-  const handleExportReport = useCallback(() => {
-    const report = templateManager.exportReport({
-      sessionInfo: {
-        startTime: data.entries[0]?.timestamp as any,
-        endTime: data.entries[data.entries.length - 1]?.timestamp as any,
-        totalEntries: data.entries.length,
-      },
-      analysis,
-      templates: templateManager.getAllTemplates().filter((t) => !t.isBuiltIn),
-    });
-    templateManager.downloadJSON(report, `prompt-analysis-${Date.now()}.json`);
-  }, [data, analysis]);
+    if (lessons.length === 0) {
+      content += '暂无提取到的规则';
+    } else {
+      lessons.forEach((lesson, index) => {
+        content += `### ${index + 1}. 错误命令\n\`${lesson.errorCommand}\`\n\n### 推荐规则\n${lesson.suggestedRule}\n\n---\n\n`;
+      });
+    }
 
-  const tabs: { id: TabId; label: string; icon: React.ReactNode }[] = [
-    { id: 'analysis', label: '分析结果', icon: <Sparkles className="w-4 h-4" /> },
-    { id: 'suggestions', label: '优化建议', icon: <Brain className="w-4 h-4" /> },
-    { id: 'templates', label: '模板库', icon: <BookOpen className="w-4 h-4" /> },
-    { id: 'export', label: '导出', icon: <Download className="w-4 h-4" /> },
-  ];
+    // 下载文件
+    const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `claude-retrospective-${Date.now()}.md`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
 
   return (
-    <div className="space-y-6">
-      <div>
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-2xl font-bold mb-2 flex items-center gap-3">
-              <Sparkles className="w-6 h-6" />
-              提示词优化建议器
-            </h2>
-            <p className="text-slate-400">
-              分析提示词使用模式，获取优化建议
-            </p>
+    <div className="h-full flex flex-col space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="p-2 rounded-lg bg-indigo-500/20 text-indigo-400 shadow-lg shadow-indigo-900/20">
+            <Brain className="w-6 h-6" />
           </div>
-          <div className="flex gap-2">
-            <button
-              onClick={handleReanalyze}
-              className="flex items-center gap-2 px-3 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg transition-colors"
-            >
-              <RefreshCw className="w-4 h-4" />
-              重新分析
-            </button>
-            <button
-              onClick={() => setShowDeepAnalysis(true)}
-              className="flex items-center gap-2 px-3 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg text-white transition-colors"
-            >
-              <Brain className="w-4 h-4" />
-              AI 深度分析
-            </button>
+          <div>
+            <h2 className="text-xl font-black text-white tracking-tight italic">BRAIN<span className="text-indigo-500">INSIGHTS</span></h2>
+            <p className="text-[9px] text-slate-500 font-black uppercase tracking-[0.2em]">Neural Experience Protocol</p>
           </div>
         </div>
       </div>
 
-      {/* 标签页 */}
-      <div className="border-b border-slate-700">
-        <nav className="flex gap-4">
-          {tabs.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-2 px-4 py-3 border-b-2 transition-colors ${
-                activeTab === tab.id
-                  ? 'border-blue-500 text-blue-400'
-                  : 'border-transparent text-slate-400 hover:text-slate-300'
-              }`}
-            >
-              {tab.icon}
-              {tab.label}
-            </button>
-          ))}
-        </nav>
+      {/* Tabs */}
+      <div className="flex p-1 bg-slate-950/80 rounded-xl border border-slate-800/50 backdrop-blur-sm">
+        {[
+          { id: 'cli', label: '智能分析', icon: <Terminal className="w-3 h-3" /> },
+          { id: 'rules', label: '错误日志', icon: <Zap className="w-3 h-3" /> }
+        ].map(tab => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id as any)}
+            className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${
+              activeTab === tab.id
+                ? 'bg-gradient-to-r from-indigo-600 to-violet-600 text-white shadow-lg shadow-indigo-900/30'
+                : 'text-slate-500 hover:text-slate-300 hover:bg-slate-800/50'
+            }`}
+          >
+            {tab.icon}
+            {tab.label}
+          </button>
+        ))}
       </div>
 
-      {/* 内容 */}
-      <div>
-        {activeTab === 'analysis' && (
-          <PromptAnalysis analysis={analysis} />
-        )}
-
-        {activeTab === 'suggestions' && (
-          <PromptSuggestions suggestions={analysis.suggestions} />
-        )}
-
-        {activeTab === 'templates' && (
-          <TemplateLibrary />
-        )}
-
-        {activeTab === 'export' && (
-          <div className="space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* 导出分析报告 */}
-              <div className="bg-slate-800 rounded-xl border border-slate-700 p-6">
-                <div className="flex items-center gap-3 mb-4">
-                  <div className="p-2 rounded-lg bg-blue-500/10">
-                    <Download className="w-5 h-5 text-blue-500" />
+      <div className="flex-1 space-y-6 overflow-y-auto pr-2 custom-scrollbar">
+        {/* CLI 复盘展示区 */}
+        {activeTab === 'cli' && (
+          <div className="space-y-4 animate-in fade-in duration-500">
+            {isCliAnalyzing && (
+               <div className="p-4 rounded-2xl bg-indigo-500/10 border border-indigo-500/30 flex items-center gap-4">
+                  <div className="relative">
+                    <Loader2 className="w-6 h-6 text-indigo-500 animate-spin" />
+                    <Terminal className="w-3 h-3 text-indigo-400 absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2" />
                   </div>
                   <div>
-                    <h3 className="font-semibold">导出分析报告</h3>
-                    <p className="text-slate-400 text-sm">导出本次分析的完整报告</p>
+                    <p className="text-[10px] font-black text-indigo-400 uppercase tracking-widest animate-pulse">Streaming from Terminal...</p>
+                    <p className="text-[9px] text-slate-500 font-bold uppercase">Claude 正在实时分析当前活跃日志</p>
                   </div>
-                </div>
-                <div className="space-y-3">
-                  <div className="text-sm text-slate-400">
-                    包含内容：
-                    <ul className="list-disc list-inside mt-1 space-y-1">
-                      <li>提示词统计数据</li>
-                      <li>发现的问题列表</li>
-                      <li>优化建议</li>
-                      <li>自定义模板（如有）</li>
-                    </ul>
-                  </div>
-                  <button
-                    onClick={handleExportReport}
-                    className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-white transition-colors"
-                  >
-                    <Download className="w-4 h-4" />
-                    导出报告
-                  </button>
-                </div>
-              </div>
-
-              {/* 模板库 */}
-              <div className="bg-slate-800 rounded-xl border border-slate-700 p-6">
-                <div className="flex items-center gap-3 mb-4">
-                  <div className="p-2 rounded-lg bg-green-500/10">
-                    <BookOpen className="w-5 h-5 text-green-500" />
-                  </div>
-                  <div>
-                    <h3 className="font-semibold">模板库管理</h3>
-                    <p className="text-slate-400 text-sm">导入/导出提示词模板</p>
-                  </div>
-                </div>
-                <div className="text-sm text-slate-400 mb-3">
-                  在"模板库"标签页中可以：
-                  <ul className="list-disc list-inside mt-1 space-y-1">
-                    <li>创建新的提示词模板</li>
-                    <li>导入他人分享的模板</li>
-                    <li>导出你的模板库</li>
-                  </ul>
+               </div>
+            )}
+            
+            {!isCliAnalyzing && !cliResult && (
+              <div className="space-y-4">
+                <div className="cyber-card p-4">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">
+                    自定义分析指令（可选）
+                  </label>
+                  <textarea
+                    value={customPrompt}
+                    onChange={(e) => setCustomPrompt(e.target.value)}
+                    placeholder={defaultPrompt}
+                    className="w-full h-[180px] bg-black/40 border border-slate-700 rounded-xl p-3 text-sm text-slate-200 font-mono resize-none focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 transition-all"
+                    style={{ fontFamily: 'var(--font-mono)' }}
+                  />
+                  <p className="mt-2 text-[9px] text-slate-500">
+                    留空则使用默认复盘指令，支持任意自定义分析需求，比如："总结本次对话的核心需求"、"提取代码修改清单"等。
+                  </p>
                 </div>
                 <button
-                  onClick={() => setActiveTab('templates')}
-                  className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg transition-colors"
+                  onClick={() => onRunCliAnalysis?.(customPrompt.trim() || undefined)}
+                  className="cyber-btn w-full py-3 text-[10px] font-black rounded-xl transition-all uppercase tracking-widest flex items-center justify-center gap-2"
                 >
-                  <BookOpen className="w-4 h-4" />
-                  前往模板库
+                  <Terminal className="w-3.5 h-3.5" />
+                  执行智能分析
                 </button>
               </div>
-            </div>
+            )}
 
-            {/* 使用说明 */}
-            <div className="bg-slate-800/50 rounded-xl border border-slate-700 p-6">
-              <div className="flex items-start gap-3">
-                <AlertCircle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
-                <div>
-                  <h3 className="font-semibold mb-2">使用提示</h3>
-                  <div className="text-sm text-slate-400 space-y-2">
-                    <p>
-                      <strong>规则分析：</strong>当前页面显示的是基于规则的快速分析结果，可以即时发现常见问题。
-                    </p>
-                    <p>
-                      <strong>AI 深度分析：</strong>点击右上角的"AI 深度分析"按钮，可以使用 LLM 进行更深入的分析，
-                      提供更个性化的建议。需要先在 API 配置中添加你的 API Key。
-                    </p>
-                    <p>
-                      <strong>模板库：</strong>将优化后的提示词保存为模板，方便以后复用，也可以与团队分享。
-                    </p>
+            {cliResult && !isCliAnalyzing && (
+              <div className="space-y-3">
+                <div className="flex justify-end mb-2">
+                  <button
+                    onClick={() => onRunCliAnalysis?.(customPrompt.trim() || undefined)}
+                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white text-[9px] font-black rounded-lg transition-all uppercase tracking-widest flex items-center gap-1.5"
+                  >
+                    <RefreshCw className="w-2.5 h-2.5" />
+                    重新分析
+                  </button>
+                </div>
+                <div className="cyber-card p-6 shadow-2xl text-slate-300 relative group markdown-content">
+                  <div className="absolute top-4 right-4 opacity-10">
+                     <Terminal className="w-10 h-10" />
                   </div>
+                  <ReactMarkdown>{cliResult}</ReactMarkdown>
                 </div>
               </div>
-            </div>
+            )}
+          </div>
+        )}
+
+        {/* 自动规则提取 */}
+        {activeTab === 'rules' && (
+          <div className="space-y-4 animate-in fade-in duration-500">
+            <h3 className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em]">错误日志收集</h3>
+            {lessons.length === 0 ? (
+              <div className="py-20 text-center border-2 border-dashed border-slate-800 rounded-3xl bg-slate-900/20">
+                <Info className="w-8 h-8 text-slate-700 mx-auto mb-3" />
+                <p className="text-slate-500 text-sm font-medium px-10">会话中暂未发现执行失败的工具操作。</p>
+              </div>
+            ) : (
+              lessons.map((lesson) => (
+                <div key={lesson.id} className="mb-4">
+                  {/* 错误卡片 */}
+                  {lesson.entry?.parsedAction && (
+                    <ActionCardRenderer action={lesson.entry.parsedAction} />
+                  )}
+                </div>
+              ))
+            )}
           </div>
         )}
       </div>
 
-      {/* 深度分析弹窗 */}
-      <PromptAIAnalysis
-        isOpen={showDeepAnalysis}
-        onClose={() => setShowDeepAnalysis(false)}
-        data={data}
-        baseAnalysis={analysis}
-      />
+      {/* Footer / Export */}
+      {(lessons.length > 0 || cliResult) && (
+        <div className="cyber-card p-4 bg-gradient-to-br from-indigo-600/20 to-blue-700/20 border-indigo-500/30 shadow-xl shadow-indigo-900/20">
+          <div className="flex items-center gap-3 mb-2 text-white">
+            <FileJson className="w-5 h-5 text-indigo-400" />
+            <span className="text-xs font-black uppercase tracking-widest gradient-text">导出复盘文档</span>
+          </div>
+          <p className="text-[10px] text-indigo-100/70 mb-4 font-medium">导出本次会话的复盘总结与错误日志，用于后续参考。</p>
+          <button
+            onClick={exportRetrospective}
+            className="cyber-btn w-full py-2.5 rounded-xl text-[10px] font-black uppercase tracking-tighter transition-all flex items-center justify-center gap-2"
+          >
+            下载 Markdown 报告 <ArrowRight className="w-3 h-3" />
+          </button>
+        </div>
+      )}
     </div>
   );
-}
+};

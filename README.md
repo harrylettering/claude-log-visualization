@@ -228,34 +228,19 @@ claude-log-visualization/
 │   │   ├── TimelineView.tsx      # 时间线视图
 │   │   ├── TokenDashboard.tsx    # Token 统计仪表板
 │   │   ├── ConversationFlow.tsx  # 对话流程图
-│   │   ├── ToolAnalysis.tsx      # 工具使用分析
-│   │   ├── PerformanceView.tsx   # 性能分析视图
 │   │   ├── RealTimeLog.tsx       # 实时日志流
-│   │   ├── FileHistory.tsx       # 文件历史
-│   │   ├── ExportPanel.tsx       # 数据导出
-│   │   ├── DebugPanel.tsx        # 调试面板
 │   │   ├── AdvancedSearchFilter.tsx  # 高级搜索过滤器
 │   │   ├── AIAnalysis.tsx        # AI 智能分析
 │   │   ├── SessionCompare.tsx    # 会话对比
-│   │   ├── SessionAggregate.tsx  # 多会话聚合
 │   │   ├── SessionReplay.tsx     # 会话回放
 │   │   ├── PromptOptimizer.tsx   # 提示词优化
-│   │   ├── SessionPatternLibrary.tsx  # 模式库
-│   │   ├── BudgetSettings.tsx    # 预算设置
-│   │   ├── BudgetProgress.tsx    # 预算进度
 │   │   └── ...
-│   ├── contexts/                # React Context
-│   │   └── BudgetContext.tsx     # 预算管理上下文
-│   ├── hooks/                   # 自定义 Hooks
-│   │   └── useBudget.ts          # 预算 Hook
 │   ├── types/                   # TypeScript 类型定义
 │   │   ├── log.ts               # 日志相关类型
 │   │   ├── search.ts            # 搜索过滤类型
 │   │   ├── analysis.ts          # 分析相关类型
 │   │   ├── prompt.ts            # 提示词相关类型
-│   │   ├── sessionPattern.ts    # 会话模式类型
-│   │   ├── aggregate.ts         # 聚合分析类型
-│   │   └── budget.ts            # 预算相关类型
+│   │   └── sessionPattern.ts    # 会话模式类型
 │   ├── utils/                   # 工具函数
 │   │   ├── logParser.ts         # 日志解析器
 │   │   ├── timelineHelpers.ts   # 时间线辅助函数

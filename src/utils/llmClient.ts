@@ -64,6 +64,32 @@ ${conversation}
 4. 提供具体的改进建议`;
 }
 
+// 经验沉淀分析的系统提示
+const EXPERIENCE_SYSTEM_PROMPT = `你是一位顶级的 AI 协作专家和资深架构师。请深度复盘用户与 AI 程序员的这段对话历史，从中“沉淀经验”并提供“优化建议”。
+
+请从以下维度进行深度挖掘：
+1. **协作经验沉淀**：识别出在该会话中哪些做法是非常成功的（如清晰的架构定义、准确的错误报告），以及哪些做法导致了效率低下或循环（如模糊的指令、反复的重试）。
+2. **深度洞察**：分析 AI 程序员的行为模式。它在哪个环节表现最挣扎？在哪种类型的提示词下表现最出色？
+3. **优化建议**：针对未来的协作，提供 3-5 条具体、可落地且高质量的改进方案。
+
+请按以下 JSON 格式返回分析结果：
+{
+  "summary": "一句话概括这段会话的协作表现",
+  "strengths": ["成功点 1", "成功点 2"],
+  "weaknesses": ["不足点 1", "不足点 2"],
+  "insights": [
+    {
+      "type": "success|failure|neutral",
+      "category": "workflow|communication|tool_use|technical",
+      "content": "具体的洞察发现",
+      "recommendation": "基于此洞察的改进建议"
+    }
+  ],
+  "nextSteps": ["下一步具体的优化建议 1", "下一步具体的优化建议 2"]
+}
+
+请只返回 JSON，不要包含其他解释性文本。`;
+
 // OpenAI 兼容 API 客户端
 export class LLMClient {
   private config: LLMConfig;
@@ -124,6 +150,33 @@ export class LLMClient {
       console.error('Failed to parse LLM response:', e);
       console.error('Response:', response);
       throw new Error('无法解析 AI 响应');
+    }
+  }
+
+  // 深度复盘：沉淀经验与优化建议
+  async analyzeExperience(entries: LogEntry[]): Promise<{
+    summary: string;
+    strengths: string[];
+    weaknesses: string[];
+    insights: Array<{ type: 'success' | 'failure' | 'neutral'; category: 'workflow' | 'communication' | 'tool_use' | 'technical'; content: string; recommendation: string }>;
+    nextSteps: string[];
+  }> {
+    const messages = [
+      { role: 'system', content: EXPERIENCE_SYSTEM_PROMPT },
+      { role: 'user', content: buildAnalysisPrompt(entries) },
+    ];
+
+    const response = await this.request(messages);
+
+    try {
+      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        throw new Error('No JSON found in response');
+      }
+      return JSON.parse(jsonMatch[0]);
+    } catch (e) {
+      console.error('Failed to parse Experience analysis:', e);
+      throw new Error('无法解析经验沉淀报告');
     }
   }
 

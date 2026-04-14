@@ -1,4 +1,5 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
+import ReactMarkdown from 'react-markdown';
 import {
   Upload,
   X,
@@ -9,13 +10,16 @@ import {
   TrendingUp,
   TrendingDown,
   FileText,
+  Brain,
+  Loader2,
+  Sparkles,
+  RefreshCw,
+  AlertCircle,
 } from 'lucide-react';
 import type { ParsedLogData } from '../types/log';
-import { parseLog } from '../utils/logParser';
-import { formatDuration, formatTokens } from '../utils/logParser';
+import { parseLog, formatDuration, formatTokens, compressLogEntries } from '../utils/logParser';
 
 interface SessionCompareProps {
-  // 可以传入默认会话
   defaultSession?: ParsedLogData;
 }
 
@@ -95,6 +99,52 @@ export function SessionCompare({ defaultSession }: SessionCompareProps) {
   const [loadingA, setLoadingA] = useState(false);
   const [loadingB, setLoadingB] = useState(false);
 
+  // AI 对比分析状态
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analyzeResult, setAnalyzeResult] = useState('');
+  const [analyzeError, setAnalyzeError] = useState<string | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const [isWsConnected, setIsWsConnected] = useState(false);
+
+  // 建立 WebSocket 连接
+  useEffect(() => {
+    const ws = new WebSocket('ws://localhost:4000');
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      setIsWsConnected(true);
+      console.log('[WS] SessionCompare 已连接');
+    };
+
+    ws.onclose = () => {
+      setIsWsConnected(false);
+      console.log('[WS] SessionCompare 连接已断开');
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const { type, payload } = JSON.parse(event.data);
+
+        if (type === 'compare-analysis-start') {
+          setIsAnalyzing(true);
+          setAnalyzeResult('');
+          setAnalyzeError(null);
+        } else if (type === 'compare-analysis-chunk') {
+          setAnalyzeResult(prev => prev + payload);
+        } else if (type === 'compare-analysis-end') {
+          setIsAnalyzing(false);
+        } else if (type === 'compare-analysis-error') {
+          setIsAnalyzing(false);
+          setAnalyzeError(payload);
+        }
+      } catch (e) {
+        console.error('[WS] 消息解析失败', e);
+      }
+    };
+
+    return () => ws.close();
+  }, []);
+
   const handleLoadSession = useCallback((slot: 'a' | 'b') => {
     const input = document.createElement('input');
     input.type = 'file';
@@ -115,6 +165,9 @@ export function SessionCompare({ defaultSession }: SessionCompareProps) {
           data: result.data,
           name: file.name,
         });
+        // 清除之前的分析结果
+        setAnalyzeResult('');
+        setAnalyzeError(null);
       } catch (err) {
         console.error('Failed to load session:', err);
         alert('加载会话失败，请检查文件格式');
@@ -131,7 +184,23 @@ export function SessionCompare({ defaultSession }: SessionCompareProps) {
     } else {
       setSessionB(null);
     }
+    setAnalyzeResult('');
+    setAnalyzeError(null);
   }, []);
+
+  // 运行 AI 对比分析
+  const runCompareAnalysis = useCallback(() => {
+    if (!sessionA || !sessionB || !wsRef.current || !isWsConnected) return;
+
+    // 压缩两个会话
+    const compressedA = compressLogEntries(sessionA.data.entries);
+    const compressedB = compressLogEntries(sessionB.data.entries);
+
+    wsRef.current.send(JSON.stringify({
+      type: 'compare-sessions-analysis',
+      data: { sessionA: compressedA, sessionB: compressedB }
+    }));
+  }, [sessionA, sessionB, isWsConnected]);
 
   const bothLoaded = sessionA && sessionB;
 
@@ -251,6 +320,71 @@ export function SessionCompare({ defaultSession }: SessionCompareProps) {
           )}
         </div>
       </div>
+
+      {/* AI 对比分析按钮 */}
+      {bothLoaded && (
+        <div className="bg-gradient-to-r from-indigo-900/50 to-purple-900/50 rounded-xl border border-indigo-500/30 p-6">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded-lg bg-indigo-500/20 text-indigo-400">
+                <Brain className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-lg font-semibold">AI 对比分析</h3>
+                <p className="text-sm text-slate-400">让 AI 判断哪个会话效果更好</p>
+              </div>
+            </div>
+            {analyzeResult && !isAnalyzing && (
+              <button
+                onClick={runCompareAnalysis}
+                className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold rounded-lg transition-all flex items-center gap-1.5"
+              >
+                <RefreshCw className="w-3 h-3" />
+                重新分析
+              </button>
+            )}
+          </div>
+
+          {!analyzeResult && !isAnalyzing && !analyzeError && (
+            <button
+              onClick={runCompareAnalysis}
+              disabled={!isWsConnected}
+              className="w-full py-3 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 disabled:from-slate-600 disabled:to-slate-600 text-white text-sm font-bold rounded-xl transition-all flex items-center justify-center gap-2 disabled:cursor-not-allowed"
+            >
+              <Sparkles className="w-4 h-4" />
+              {isWsConnected ? '开始 AI 对比分析' : '等待连接...'}
+            </button>
+          )}
+
+          {isAnalyzing && (
+            <div className="flex items-center gap-3 p-4 bg-indigo-500/10 rounded-xl border border-indigo-500/30">
+              <Loader2 className="w-5 h-5 text-indigo-400 animate-spin" />
+              <div>
+                <p className="text-sm font-medium text-indigo-400 animate-pulse">AI 正在分析对比中...</p>
+                <p className="text-xs text-slate-500">Claude 正在对比两个会话的质量和效率</p>
+              </div>
+            </div>
+          )}
+
+          {analyzeError && (
+            <div className="flex items-center gap-3 p-4 bg-red-500/10 rounded-xl border border-red-500/30">
+              <AlertCircle className="w-5 h-5 text-red-400" />
+              <div className="flex-1">
+                <p className="text-sm font-medium text-red-400">分析失败</p>
+                <p className="text-xs text-slate-400">{analyzeError}</p>
+              </div>
+            </div>
+          )}
+
+          {analyzeResult && !isAnalyzing && (
+            <div className="mt-4 p-4 bg-slate-900/50 rounded-xl border border-slate-700">
+              <div className="markdown-content text-slate-300">
+                <ReactMarkdown>{analyzeResult}</ReactMarkdown>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 对比结果 */}
       {bothLoaded ? (

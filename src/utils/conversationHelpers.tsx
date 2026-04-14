@@ -15,7 +15,6 @@ export function getNodeColor(type: string) {
     case 'user': return UI_COLORS.user.dot;
     case 'assistant': return UI_COLORS.assistant.dot;
     case 'system': return UI_COLORS.system.dot;
-    case 'file-history-snapshot': return UI_COLORS.fileHistory.dot;
     default: return UI_COLORS.default.dot;
   }
 }
@@ -25,7 +24,6 @@ export function getNodeBorder(type: string) {
     case 'user': return `${UI_COLORS.user.bg} ${UI_COLORS.user.border}`;
     case 'assistant': return `${UI_COLORS.assistant.bg} ${UI_COLORS.assistant.border}`;
     case 'system': return `${UI_COLORS.system.bg} ${UI_COLORS.system.border}`;
-    case 'file-history-snapshot': return `${UI_COLORS.fileHistory.bg} ${UI_COLORS.fileHistory.border}`;
     default: return `${UI_COLORS.default.bg} ${UI_COLORS.default.border}`;
   }
 }
@@ -50,7 +48,6 @@ export function getMessagePreview(entry: LogEntry): string {
       }
     }
   }
-  if (entry.type === 'file-history-snapshot') return '文件快照';
   if (entry.type === 'system' && entry.subtype === 'turn_duration') return `轮次: ${entry.messageCount} 条消息`;
   return entry.type;
 }

@@ -30,7 +30,7 @@ function matchesQuery(
   }
 }
 
-// 获取条目的搜索文本
+// 获取条目的搜索文本 - 检索原始日志的所有字段
 function getEntrySearchText(entry: LogEntry): string {
   return JSON.stringify(entry);
 }

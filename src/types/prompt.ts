@@ -56,6 +56,23 @@ export interface PromptStats {
   toolCallSuccessRate: number;
 }
 
+// 经验洞察
+export interface ExperienceInsight {
+  type: 'success' | 'failure' | 'neutral';
+  category: 'workflow' | 'communication' | 'tool_use' | 'technical';
+  content: string;
+  recommendation: string;
+}
+
+// 会话经验总结
+export interface SessionExperience {
+  summary: string;
+  strengths: string[];
+  weaknesses: string[];
+  insights: ExperienceInsight[];
+  nextSteps: string[];
+}
+
 // 提示词分析结果
 export interface PromptAnalysis {
   stats: PromptStats;
@@ -63,6 +80,7 @@ export interface PromptAnalysis {
   suggestions: PromptSuggestion[];
   bestPractices: string[];
   score: number;  // 0-100
+  experience?: SessionExperience; // 新增：经验沉淀
 }
 
 // 提示词模板

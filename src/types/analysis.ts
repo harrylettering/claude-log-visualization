@@ -129,7 +129,6 @@ export const DEFAULT_ANALYSIS: AnalysisResult = {
     inputTokens: 0,
     outputTokens: 0,
     sessionDuration: 0,
-    filesModified: 0,
     modelsUsed: [],
   },
   insights: [],

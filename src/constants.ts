@@ -29,12 +29,6 @@ export const UI_COLORS = {
     dot: 'bg-gray-500',
     text: 'text-gray-400',
   },
-  fileHistory: {
-    bg: 'bg-amber-500/10',
-    border: 'border-amber-500/30',
-    dot: 'bg-amber-500',
-    text: 'text-amber-400',
-  },
   default: {
     bg: 'bg-slate-500/10',
     border: 'border-slate-500/30',
@@ -42,9 +36,6 @@ export const UI_COLORS = {
     text: 'text-slate-400',
   },
 } as const;
-
-// 性能阈值
-export const PERFORMANCE_THRESHOLD_MULTIPLIER = 2;
 
 // 格式化常量
 export const TOKEN_FORMATTING = {

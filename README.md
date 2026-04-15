@@ -18,9 +18,7 @@
 
 ## Demo
 
-[![Claude Log Analyzer demo video](docs/screenshots/agent-flow-bash.png)](docs/screenshots/claude-log-analyzer.mp4)
-
-Click the preview above to open the demo video.
+https://github.com/user-attachments/assets/ab2f4640-be88-4c1f-aedf-dd353e46ef6a
 
 ## Why This Exists
 

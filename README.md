@@ -18,7 +18,9 @@
 
 ## Demo
 
-<video src="docs/screenshots/claude-log-analyzer.mp4" controls muted playsinline width="100%"></video>
+[![Claude Log Analyzer demo video](docs/screenshots/agent-flow-bash.png)](docs/screenshots/claude-log-analyzer.mp4)
+
+Click the preview above to open the demo video.
 
 ## Why This Exists
 

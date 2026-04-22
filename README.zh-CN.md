@@ -48,7 +48,7 @@
 
 ## Demo
 
-30 秒产品演示：
+90 秒产品演示：
 
 https://github.com/user-attachments/assets/be7374a6-5f6a-4c87-95f5-defe3974f6ea
 

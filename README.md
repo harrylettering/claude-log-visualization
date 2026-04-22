@@ -34,21 +34,11 @@
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License" />
 </p>
 
-<p align="center">
-  <a href="https://github.com/user-attachments/assets/be7374a6-5f6a-4c87-95f5-defe3974f6ea">
-    <img src="docs/screenshots/session-overview.png" alt="Claude Trace Replay session overview" width="900" />
-  </a>
-</p>
-
-<p align="center">
-  Click the preview to watch the demo.
-</p>
-
 <a id="demo"></a>
 
 ## Demo
 
-Watch the 30-second product demo:
+Watch the 90-second product demo:
 
 https://github.com/user-attachments/assets/be7374a6-5f6a-4c87-95f5-defe3974f6ea
 

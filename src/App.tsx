@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
-import { BarChart2, MessageSquare, Clock, Zap, AlertCircle, Loader2, GitMerge, Sparkles, Activity, Terminal, Search, HardDrive, PlayCircle, Upload, Share2 } from 'lucide-react'
+import { BarChart2, MessageSquare, Clock, Zap, AlertCircle, Loader2, GitMerge, Sparkles, Activity, Terminal, Search, HardDrive, PlayCircle, Upload, Share2, Calendar } from 'lucide-react'
 import { parseLog } from './utils/logParser'
 import type { ParsedLogData, LogEntry } from './types/log'
 import { FileUpload } from './components/FileUpload'
@@ -36,9 +36,18 @@ export default function App() {
   const [isWsConnected, setIsWsConnected] = useState(false)
   const [discoveryList, setDiscoveryList] = useState<any[]>([])
   const [manualPath, setManualPath] = useState('')
+  const [scanWindowHours, setScanWindowHours] = useState<number>(24)
   const wsRef = useRef<WebSocket | null>(null)
   const activePathRef = useRef<string | null>(null)
   const offlineLogContentRef = useRef<string | null>(null)
+
+  // Time window options
+  const timeWindowOptions = [
+    { value: 24, label: 'Last 24 hours' },
+    { value: 168, label: 'Last 7 days' },
+    { value: 360, label: 'Last 15 days' },
+    { value: 720, label: 'Last 30 days' },
+  ]
 
   const resetClaudeCliAnalysis = useCallback(() => {
     setIsCliAnalyzing(false)
@@ -54,7 +63,7 @@ export default function App() {
     ws.onopen = () => {
       setIsWsConnected(true)
       console.log('[WS] Connected to log watcher service')
-      ws.send(JSON.stringify({ type: 'get-discovery-list' }))
+      ws.send(JSON.stringify({ type: 'get-discovery-list', data: { hours: scanWindowHours } }))
     }
 
     ws.onclose = () => {
@@ -107,6 +116,13 @@ export default function App() {
       setCurrentView('overview')
     }
   }
+
+  // Refresh discovery list with current time window
+  const refreshDiscoveryList = useCallback(() => {
+    if (wsRef.current && isWsConnected) {
+      wsRef.current.send(JSON.stringify({ type: 'get-discovery-list', data: { hours: scanWindowHours } }))
+    }
+  }, [isWsConnected, scanWindowHours])
 
   const runClaudeCliAnalysis = useCallback((prompt?: string) => {
     const path = activePathRef.current
@@ -179,7 +195,40 @@ export default function App() {
           <h2 className="text-4xl font-black text-white tracking-tighter italic">
             CLAUDE<span className="text-blue-500">TRACE REPLAY</span>
           </h2>
-          <p className="text-slate-400 text-lg">Automatically discover active sessions from the last 24 hours, or enter a path manually.</p>
+          <p className="text-slate-400 text-lg">Automatically discover active sessions, or enter a path manually.</p>
+        </div>
+
+        {/* Time window selector */}
+        <div className="flex justify-center">
+          <div className="inline-flex items-center gap-3 p-2 rounded-2xl bg-slate-900/60 border border-slate-800 backdrop-blur-sm">
+            <div className="flex items-center gap-2 px-3 text-slate-400">
+              <Calendar className="w-4 h-4" />
+              <span className="text-xs font-bold uppercase tracking-widest">Time Range</span>
+            </div>
+            <div className="flex gap-1">
+              {timeWindowOptions.map((option) => (
+                <button
+                  key={option.value}
+                  onClick={() => {
+                    setScanWindowHours(option.value)
+                    // Trigger refresh after state update
+                    setTimeout(() => {
+                      if (wsRef.current && isWsConnected) {
+                        wsRef.current.send(JSON.stringify({ type: 'get-discovery-list', data: { hours: option.value } }))
+                      }
+                    }, 0)
+                  }}
+                  className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition-all ${
+                    scanWindowHours === option.value
+                      ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/25'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
+                  }`}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
 
         {/* Auto-discovered session list */}
@@ -238,10 +287,10 @@ export default function App() {
           {discoveryList.length === 0 && (
             <div className="md:col-span-3 py-20 text-center border-2 border-dashed border-slate-800 rounded-3xl bg-slate-900/20">
               <Search className="w-12 h-12 text-slate-800 mx-auto mb-4 animate-bounce" />
-              <p className="text-slate-500 text-lg font-bold">No active sessions found in the last 24 hours</p>
+              <p className="text-slate-500 text-lg font-bold">No active sessions found in the selected time range</p>
               <p className="text-slate-600 text-sm mt-1">Make sure Claude has been started in your terminal and at least one message has been sent.</p>
-              <button 
-                onClick={() => wsRef.current?.send(JSON.stringify({ type: 'get-discovery-list' }))}
+              <button
+                onClick={() => refreshDiscoveryList()}
                 className="mt-8 px-8 py-3 bg-slate-800 hover:bg-slate-700 text-white text-xs font-black rounded-full transition-all uppercase tracking-widest"
               >
                 Force Rescan

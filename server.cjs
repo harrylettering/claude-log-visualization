@@ -475,15 +475,15 @@ function parseSessionNamesFromHistory() {
 }
 
 // --- Discovery scanner with exclusions and full-path output ---
-function getRecentSessions() {
+function getRecentSessions(hours = 24) {
     if (!fs.existsSync(CLAUDE_BASE_DIR)) {
         return [];
     }
     
     const sessions = [];
     const now = Date.now();
-    // Scan the last 24 hours to keep discovery stable while avoiding stale sessions.
-    const SCAN_WINDOW = 30 * 24 * 60 * 60 * 1000;
+    // Calculate scan window based on hours parameter (default 24 hours)
+    const SCAN_WINDOW = hours * 60 * 60 * 1000;
     
     // Parse session names from history.jsonl
     const sessionNames = parseSessionNamesFromHistory();
@@ -625,7 +625,8 @@ wss.on('connection', (ws) => {
         try {
             const { type, data } = JSON.parse(message);
             if (type === 'get-discovery-list') {
-                const list = getRecentSessions();
+                const hours = data?.hours || 24;
+                const list = getRecentSessions(hours);
                 ws.send(JSON.stringify({ type: 'discovery-list', payload: list }));
             } else if (type === 'start-watch') {
                 console.log(`[DEBUG] Received start-watch: ${data.path}`);
